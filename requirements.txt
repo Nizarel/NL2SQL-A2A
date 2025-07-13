@@ -1,5 +1,11 @@
+# Core NL2SQL Dependencies
 semantic-kernel==1.34.0
+fastmcp
 python-dotenv
 aiohttp
+httpx
 pydantic
-asyncio
+
+# Optional: for development and testing
+pytest
+pytest-asyncio
