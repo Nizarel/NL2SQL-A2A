@@ -114,7 +114,7 @@ Return your analysis in this JSON format:
         Generate SQL query based on question and schema context
         """
         sql_prompt = f"""
-You are an expert SQL query generator for a business analytics database.
+You are an expert SQL query generator for a Microsoft SQL Server business analytics database.
 
 USER QUESTION: {question}
 
@@ -124,23 +124,38 @@ INTENT ANALYSIS:
 DATABASE SCHEMA:
 {schema_context}
 
-CRITICAL SQL GENERATION RULES:
+CRITICAL SQL GENERATION RULES FOR SQL SERVER:
 1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
-2. **MANDATORY**: Use SQL Server syntax ONLY:
+2. **MANDATORY SQL SERVER SYNTAX ONLY**:
    - Use "SELECT TOP 10" instead of "SELECT ... LIMIT 10"
-   - Use GROUP BY ... ORDER BY ... syntax properly
-   - NO PostgreSQL or MySQL syntax allowed
+   - Use "SELECT TOP 10" instead of "OFFSET ... FETCH NEXT" syntax
+   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
+   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
+   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
+   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
+   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
+   - Use + for string concatenation instead of CONCAT()
+   - Use proper spacing around AS keyword for column aliases
    
-   EXAMPLE:
-   ❌ WRONG: SELECT ... FROM dev.table ORDER BY column LIMIT 10;
-   ✅ CORRECT: SELECT TOP 10 ... FROM dev.table ORDER BY column;
+   EXAMPLES:
+   ❌ WRONG: SELECT ... WHERE EXTRACT(YEAR FROM calday) = 2025
+   ✅ CORRECT: SELECT ... WHERE YEAR(calday) = 2025
+   
+   ❌ WRONG: SELECT ... ORDER BY column LIMIT 10;
+   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
+   
+   ❌ WRONG: SELECT ... ORDER BY column OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
+   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
+   
+   ❌ WRONG: SUM(revenue)AS total_revenue
+   ✅ CORRECT: SUM(revenue) AS total_revenue
    
 3. Use correct column names as shown in schema:
    - customer_id (NOT cliente_id)
    - Nombre_cliente for customer names
    - IngresoNetoSImpuestos for revenue
 4. Join tables properly using the relationships shown
-5. Use meaningful column aliases
+5. Use meaningful column aliases with proper AS keyword spacing
 6. Include appropriate WHERE clauses for business context
 
 TABLE RELATIONSHIPS:
@@ -157,12 +172,15 @@ BUSINESS CONTEXT:
 - Product identification: Material + Producto
 - Time analysis: calday (transaction date)
 
-Generate a SQL query that:
+Generate a SQL Server query that:
 1. Accurately answers the user's question
-2. Uses proper column names from the schema
-3. Includes appropriate JOINs based on relationships
-4. Is optimized for performance
-5. Returns meaningful business results
+2. Uses proper SQL Server syntax (NO PostgreSQL/MySQL functions)
+3. Uses SELECT TOP instead of LIMIT or OFFSET...FETCH NEXT
+4. Uses proper column names from the schema
+5. Includes appropriate JOINs based on relationships
+6. Has proper spacing around AS keyword in column aliases
+7. Is optimized for performance
+8. Returns meaningful business results
 
 Return ONLY the SQL query without explanations or markdown formatting.
 """
@@ -178,6 +196,46 @@ Return ONLY the SQL query without explanations or markdown formatting.
         sql_query = re.sub(r'^```sql\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = sql_query.strip()
+        
+        # Convert PostgreSQL/MySQL date functions to SQL Server format
+        # EXTRACT(YEAR FROM date_col) -> YEAR(date_col)
+        sql_query = re.sub(r'\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
+        sql_query = re.sub(r'\bEXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
+        sql_query = re.sub(r'\bEXTRACT\s*\(\s*DAY\s+FROM\s+([^)]+)\)', r'DAY(\1)', sql_query, flags=re.IGNORECASE)
+        
+        # Convert DATE_TRUNC to DATEPART for SQL Server
+        sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'year\'\s*,\s*([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
+        sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'month\'\s*,\s*([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
+        
+        # Convert NOW() to GETDATE()
+        sql_query = re.sub(r'\bNOW\s*\(\s*\)', 'GETDATE()', sql_query, flags=re.IGNORECASE)
+        
+        # Convert CURRENT_DATE to CAST(GETDATE() AS DATE)
+        sql_query = re.sub(r'\bCURRENT_DATE\b', 'CAST(GETDATE() AS DATE)', sql_query, flags=re.IGNORECASE)
+        
+        # Convert CONCAT function (PostgreSQL) to + operator (SQL Server)
+        sql_query = re.sub(r'\bCONCAT\s*\(([^)]+)\)', lambda m: m.group(1).replace(',', ' +'), sql_query, flags=re.IGNORECASE)
+        
+        # Convert OFFSET ... FETCH NEXT to TOP for better compatibility
+        offset_fetch_pattern = r'\bOFFSET\s+(\d+)\s+ROWS?\s+FETCH\s+NEXT\s+(\d+)\s+ROWS?\s+ONLY\b'
+        offset_match = re.search(offset_fetch_pattern, sql_query, re.IGNORECASE)
+        
+        if offset_match:
+            offset_value = int(offset_match.group(1))
+            fetch_value = int(offset_match.group(2))
+            
+            # Remove the OFFSET ... FETCH NEXT clause
+            sql_query = re.sub(offset_fetch_pattern, '', sql_query, flags=re.IGNORECASE).strip()
+            
+            # If offset is 0, just use TOP
+            if offset_value == 0:
+                # Add TOP after SELECT
+                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
+            else:
+                # For non-zero offset, we need to use ROW_NUMBER() - more complex but compatible
+                # This is a simplified approach - in practice might need more sophisticated handling
+                print(f"⚠️ WARNING: OFFSET {offset_value} converted to TOP {fetch_value} (offset ignored for compatibility)")
+                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
         
         # Convert LIMIT to TOP for SQL Server compatibility
         # Handle various LIMIT patterns that might be generated
@@ -204,6 +262,10 @@ Return ONLY the SQL query without explanations or markdown formatting.
                 sql_query = re.sub(limit_pattern_mid, '', sql_query, flags=re.IGNORECASE).strip()
                 # Add TOP after SELECT
                 sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+        
+        # Fix potential issues with column aliases and AS keyword
+        # Ensure proper spacing around AS keyword
+        sql_query = re.sub(r'\s+AS\s+', ' AS ', sql_query, flags=re.IGNORECASE)
         
         # Ensure dev. prefix is used for known tables
         table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
