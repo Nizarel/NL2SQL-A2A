@@ -3,8 +3,10 @@ Executor Agent - Executes SQL queries and handles database operations
 """
 
 import time
+import os
 from typing import Dict, Any
 from semantic_kernel import Kernel
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
 
 from agents.base_agent import BaseAgent
 from plugins.mcp_database_plugin import MCPDatabasePlugin
@@ -13,11 +15,39 @@ from plugins.mcp_database_plugin import MCPDatabasePlugin
 class ExecutorAgent(BaseAgent):
     """
     Agent responsible for executing SQL queries against the database
+    Uses GPT-4o-mini for cost optimization since it primarily handles data formatting
     """
     
     def __init__(self, kernel: Kernel, mcp_plugin: MCPDatabasePlugin):
-        super().__init__(kernel, "ExecutorAgent")
+        # Create a separate kernel for cost optimization with mini model
+        self.mini_kernel = self._create_mini_kernel()
+        super().__init__(self.mini_kernel, "ExecutorAgent")
         self.mcp_plugin = mcp_plugin
+        
+    def _create_mini_kernel(self) -> Kernel:
+        """
+        Create a separate kernel with GPT-4o-mini for cost-efficient operations
+        """
+        mini_kernel = Kernel()
+        
+        # Setup mini model for cost optimization
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        mini_deployment = os.getenv("AZURE_OPENAI_MINI_DEPLOYMENT_NAME", "gpt-4.1-mini")
+        azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+        
+        if azure_endpoint and azure_api_key and mini_deployment:
+            ai_service = AzureChatCompletion(
+                deployment_name=mini_deployment,
+                endpoint=azure_endpoint,
+                api_key=azure_api_key,
+                api_version=azure_api_version,
+                service_id="azure_openai_mini"
+            )
+            mini_kernel.add_service(ai_service)
+            print(f"💰 ExecutorAgent using cost-optimized model: {mini_deployment}")
+        
+        return mini_kernel
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
