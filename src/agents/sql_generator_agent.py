@@ -126,7 +126,15 @@ DATABASE SCHEMA:
 
 CRITICAL SQL GENERATION RULES:
 1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
-2. Use SQL Server syntax (TOP instead of LIMIT)
+2. **MANDATORY**: Use SQL Server syntax ONLY:
+   - Use "SELECT TOP 10" instead of "SELECT ... LIMIT 10"
+   - Use GROUP BY ... ORDER BY ... syntax properly
+   - NO PostgreSQL or MySQL syntax allowed
+   
+   EXAMPLE:
+   ❌ WRONG: SELECT ... FROM dev.table ORDER BY column LIMIT 10;
+   ✅ CORRECT: SELECT TOP 10 ... FROM dev.table ORDER BY column;
+   
 3. Use correct column names as shown in schema:
    - customer_id (NOT cliente_id)
    - Nombre_cliente for customer names
@@ -171,6 +179,32 @@ Return ONLY the SQL query without explanations or markdown formatting.
         sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = sql_query.strip()
         
+        # Convert LIMIT to TOP for SQL Server compatibility
+        # Handle various LIMIT patterns that might be generated
+        
+        # Pattern 1: "LIMIT n" at the end of query
+        limit_pattern_end = r'\bLIMIT\s+(\d+)\s*;?\s*$'
+        limit_match = re.search(limit_pattern_end, sql_query, re.IGNORECASE)
+        
+        # Pattern 2: "LIMIT n" anywhere in the query (before ORDER BY, etc.)
+        limit_pattern_mid = r'\bLIMIT\s+(\d+)\b'
+        
+        if limit_match:
+            limit_value = limit_match.group(1)
+            # Remove the LIMIT clause completely
+            sql_query = re.sub(limit_pattern_end, '', sql_query, flags=re.IGNORECASE).strip()
+            # Add TOP after SELECT (handle multiple SELECT statements by targeting the first one)
+            sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+        elif re.search(limit_pattern_mid, sql_query, re.IGNORECASE):
+            # Handle LIMIT in middle of query
+            match = re.search(limit_pattern_mid, sql_query, re.IGNORECASE)
+            if match:
+                limit_value = match.group(1)
+                # Remove the LIMIT clause
+                sql_query = re.sub(limit_pattern_mid, '', sql_query, flags=re.IGNORECASE).strip()
+                # Add TOP after SELECT
+                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+        
         # Ensure dev. prefix is used for known tables
         table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
         for table in table_names:
@@ -192,6 +226,14 @@ Return ONLY the SQL query without explanations or markdown formatting.
         # Ensure proper statement termination
         if not sql_query.endswith(';'):
             sql_query += ';'
+        
+        # Final validation: Check if LIMIT still exists and warn
+        if re.search(r'\bLIMIT\b', sql_query, re.IGNORECASE):
+            print(f"⚠️ WARNING: LIMIT syntax still detected in SQL: {sql_query}")
+            # Force conversion for any remaining LIMIT
+            sql_query = re.sub(r'\bLIMIT\s+(\d+)\b', '', sql_query, flags=re.IGNORECASE)
+            if not re.search(r'\bTOP\s+\d+\b', sql_query, re.IGNORECASE):
+                sql_query = re.sub(r'\bSELECT\b', 'SELECT TOP 10', sql_query, count=1, flags=re.IGNORECASE)
         
         return sql_query
     

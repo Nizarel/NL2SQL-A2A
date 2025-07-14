@@ -249,8 +249,46 @@ RECOMMENDATION_1: Focus marketing efforts on top-performing customer segments | 
         """
         Format results for AI analysis
         """
-        if not formatted_results or formatted_results.get("status") != "success":
+        if not formatted_results:
             return "No valid data available for analysis"
+        
+        # Handle different status types from ExecutorAgent
+        status = formatted_results.get("status")
+        if status == "error":
+            return f"Query error: {formatted_results.get('message', 'Unknown error')}"
+        elif status == "no_data":
+            return "No structured data found in results"
+        elif status == "parsing_error":
+            # If parsing failed, try to extract info from raw data
+            raw_data = formatted_results.get("raw_data", "")
+            if raw_data and "rows)" in raw_data:
+                return f"Data parsing failed, but raw results available: {raw_data[:200]}..."
+            return "Data parsing failed and no raw data available"
+        
+        # Handle successful results
+        if status != "success":
+            # If no explicit status, check for data presence
+            rows = formatted_results.get("rows", [])
+            headers = formatted_results.get("headers", [])
+            
+            # If no structured data, try to parse from other fields
+            if not rows and not headers:
+                # Check if we have raw data we can work with
+                raw_data = str(formatted_results)
+                if "Query Results" in raw_data and "rows)" in raw_data:
+                    # Extract key information from raw data
+                    import re
+                    row_match = re.search(r'\((\d+)\s+rows?\)', raw_data)
+                    row_count = row_match.group(1) if row_match else "unknown"
+                    
+                    # Try to extract sample data
+                    lines = raw_data.split('\\n')
+                    data_lines = [line for line in lines if '|' in line and 'CallToolResult' not in line]
+                    
+                    if data_lines:
+                        return f"Raw query results with {row_count} rows. Sample data structure:\n{data_lines[0] if data_lines else 'No sample available'}"
+                
+                return "No valid data available for analysis"
         
         rows = formatted_results.get("rows", [])
         headers = formatted_results.get("headers", [])
@@ -258,7 +296,7 @@ RECOMMENDATION_1: Focus marketing efforts on top-performing customer segments | 
         if not rows:
             return "No data rows available"
         
-        # Create a summary of the data
+        # Create a comprehensive summary of the data
         summary = f"Data contains {len(rows)} rows with columns: {', '.join(headers)}\n"
         
         # Show first few rows as sample

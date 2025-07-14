@@ -144,10 +144,18 @@ class ExecutorAgent(BaseAgent):
             
             execution_time = time.time() - start_time
             
+            # Extract the actual text data from CallToolResult
+            if hasattr(result, 'data'):
+                result_text = result.data
+            elif hasattr(result, 'content') and result.content:
+                result_text = result.content[0].text if result.content else str(result)
+            else:
+                result_text = str(result)
+            
             # Parse and format results
-            formatted_results = self._format_query_results(result)
-            row_count = self._count_rows_in_result(result)
-            columns = self._extract_columns_from_result(result)
+            formatted_results = self._format_query_results(result_text)
+            row_count = self._count_rows_in_result(result_text)
+            columns = self._extract_columns_from_result(result_text)
             
             return {
                 "success": True,
@@ -182,14 +190,23 @@ class ExecutorAgent(BaseAgent):
                     "message": raw_result or "No results returned"
                 }
             
-            lines = raw_result.strip().split('\n')
+            # Handle CallToolResult structured data extraction
+            if "CallToolResult" in raw_result:
+                # Extract the actual data portion
+                if "data='" in raw_result:
+                    start_pos = raw_result.find("data='") + 6
+                    end_pos = raw_result.find("', is_error=False")
+                    if start_pos > 5 and end_pos > start_pos:
+                        raw_result = raw_result[start_pos:end_pos]
+            
+            lines = raw_result.strip().split('\\n')
             
             # Find header and data lines
             header_line = None
             data_lines = []
             
             for i, line in enumerate(lines):
-                if '|' in line and not line.startswith('='):
+                if '|' in line and not line.startswith('=') and not line.startswith('-'):
                     if header_line is None:
                         header_line = line
                     else:
@@ -202,14 +219,16 @@ class ExecutorAgent(BaseAgent):
                 }
             
             # Parse header
-            headers = [col.strip() for col in header_line.split('|')]
+            headers = [col.strip() for col in header_line.split('|') if col.strip()]
             
             # Parse data rows
             rows = []
             for line in data_lines:
-                if line.strip() and not line.startswith('-'):
-                    row_data = [cell.strip() for cell in line.split('|')]
-                    if len(row_data) == len(headers):
+                if line.strip() and not line.startswith('-') and '|' in line:
+                    row_data = [cell.strip() for cell in line.split('|') if cell.strip()]
+                    if len(row_data) >= len(headers):
+                        # Take only as many cells as we have headers
+                        row_data = row_data[:len(headers)]
                         row_dict = dict(zip(headers, row_data))
                         rows.append(row_dict)
             
@@ -227,32 +246,32 @@ class ExecutorAgent(BaseAgent):
                 "raw_data": raw_result
             }
     
-    def _count_rows_in_result(self, result: str) -> int:
+    def _count_rows_in_result(self, result_text: str) -> int:
         """
         Count the number of data rows in the query result
         """
         try:
-            if "Query Results" in result and "rows)" in result:
+            if "Query Results" in result_text and "rows)" in result_text:
                 # Extract row count from: "Query Results (10 rows):"
                 import re
-                match = re.search(r'\((\d+)\s+rows?\)', result)
+                match = re.search(r'\((\d+)\s+rows?\)', result_text)
                 if match:
                     return int(match.group(1))
             
             # Fallback: count lines that look like data rows
-            lines = result.split('\n')
+            lines = result_text.split('\n')
             data_lines = [line for line in lines if '|' in line and not line.startswith('=') and not line.startswith('-')]
             return max(0, len(data_lines) - 1)  # Subtract header row
             
         except Exception:
             return 0
     
-    def _extract_columns_from_result(self, result: str) -> list:
+    def _extract_columns_from_result(self, result_text: str) -> list:
         """
         Extract column names from query result
         """
         try:
-            lines = result.split('\n')
+            lines = result_text.split('\n')
             for line in lines:
                 if '|' in line and not line.startswith('=') and not line.startswith('-'):
                     # This should be the header line
