@@ -23,27 +23,28 @@ class SchemaService:
         """
         Initialize schema context by gathering all table information
         """
-        # Get list of tables
-        tables_result = await self.mcp_plugin.list_tables()
-        print(f"Tables found: {tables_result}")
-        
-        # Parse table names
-        table_names = self._parse_table_names(tables_result)
-        
-        # Get schema for each table
-        for table_name in table_names:
-            print(f"Getting schema for table: {table_name}")
-            schema_info = await self.mcp_plugin.describe_table(table_name)
-            self.tables_info[table_name] = schema_info
-        
-        # Build schema context
-        self.schema_context = {
-            "database_name": "Business Analytics Database",
-            "schema_name": "dev",
-            "tables": self.tables_info,
-            "relationships": self._build_relationships(),
-            "business_context": self._get_business_context()
-        }
+        async with self.mcp_plugin:
+            # Get list of tables
+            tables_result = await self.mcp_plugin._list_tables_raw()
+            print(f"Tables found: {tables_result}")
+            
+            # Parse table names
+            table_names = self._parse_table_names(tables_result)
+            
+            # Get schema for each table
+            for table_name in table_names:
+                print(f"Getting schema for table: {table_name}")
+                schema_info = await self.mcp_plugin._describe_table_raw(table_name)
+                self.tables_info[table_name] = schema_info
+            
+            # Build schema context
+            self.schema_context = {
+                "database_name": "Business Analytics Database",
+                "schema_name": "dev",
+                "tables": self.tables_info,
+                "relationships": self._build_relationships(),
+                "business_context": self._get_business_context()
+            }
         
         return self.schema_context
     
@@ -168,23 +169,80 @@ class SchemaService:
         summary.append(f"Schema: {self.schema_context.get('schema_name', 'dev')}")
         summary.append("")
         
-        summary.append("TABLES:")
-        for table_name in self.tables_info.keys():
-            summary.append(f"- dev.{table_name}")
+        # Add detailed table schemas
+        summary.append("DETAILED TABLE SCHEMAS:")
         summary.append("")
         
-        summary.append("BUSINESS CONTEXT:")
-        business_context = self.schema_context.get('business_context', {})
-        summary.append(f"Domain: {business_context.get('domain', 'Analytics')}")
+        # Key table information with important columns highlighted
+        summary.append("TABLE: dev.cliente (Customer Master Data)")
+        summary.append("- customer_id (varchar, PRIMARY KEY) - Unique customer identifier")
+        summary.append("- Nombre_cliente (varchar) - Customer name")
+        summary.append("- Canal_Comercial (varchar) - Commercial channel")
+        summary.append("- Territorio_del_cliente (varchar) - Customer territory")
+        summary.append("- Region (via cliente_cedi join)")
         summary.append("")
         
-        summary.append("KEY METRICS:")
-        for metric in business_context.get('key_metrics', []):
-            summary.append(f"- {metric}")
+        summary.append("TABLE: dev.segmentacion (Sales/Revenue Data)")
+        summary.append("- customer_id (varchar, FOREIGN KEY) - Links to cliente.customer_id")
+        summary.append("- material_id (varchar, FOREIGN KEY) - Links to producto.Material")
+        summary.append("- calday (date) - Transaction date")
+        summary.append("- IngresoNetoSImpuestos (float) - Net revenue without taxes")
+        summary.append("- net_revenue (float) - Net revenue")
+        summary.append("- VentasCajasUnidad (float) - Units sold")
+        summary.append("- VentasCajasOriginales (float) - Original cases sold")
+        summary.append("- bottles_sold_m (float) - Bottles sold")
+        summary.append("")
+        
+        summary.append("TABLE: dev.producto (Product Master Data)")
+        summary.append("- Material (varchar, PRIMARY KEY) - Product material code")
+        summary.append("- Producto (varchar) - Product name")
+        summary.append("- Categoria (varchar) - Product category")
+        summary.append("- Subcategoria (varchar) - Product subcategory")
+        summary.append("- AgrupadordeMarca (varchar) - Brand grouping")
+        summary.append("")
+        
+        summary.append("TABLE: dev.cliente_cedi (Customer Distribution)")
+        summary.append("- customer_id (varchar, FOREIGN KEY) - Links to cliente.customer_id")
+        summary.append("- cedi_id (varchar) - Distribution center ID")
+        summary.append("- Region (varchar) - Geographic region")
+        summary.append("- Territorio (varchar) - Territory")
+        summary.append("- Subterritorio (varchar) - Sub-territory")
+        summary.append("")
+        
+        summary.append("TABLE: dev.mercado (Market/Territory Data)")
+        summary.append("- CEDIid (varchar, PRIMARY KEY) - Distribution center ID")
+        summary.append("- CEDI (varchar) - Distribution center name")
+        summary.append("- Zona (varchar) - Zone")
+        summary.append("- Territorio (varchar) - Territory")
+        summary.append("")
+        
+        summary.append("TABLE: dev.tiempo (Time Dimension)")
+        summary.append("- Fecha (date, PRIMARY KEY) - Date")
+        summary.append("- Year (int) - Year")
+        summary.append("- NumMes (int) - Month number")
+        summary.append("- Mes (varchar) - Month name")
+        summary.append("- Q (int) - Quarter")
+        summary.append("")
+        
+        summary.append("COMMON JOIN PATTERNS:")
+        summary.append("- Customer Revenue: segmentacion.customer_id = cliente.customer_id")
+        summary.append("- Customer Territory: cliente.customer_id = cliente_cedi.customer_id")
+        summary.append("- Product Details: segmentacion.material_id = producto.Material")
+        summary.append("- Date Analysis: segmentacion.calday = tiempo.Fecha")
+        summary.append("")
+        
+        summary.append("REVENUE METRICS:")
+        summary.append("- IngresoNetoSImpuestos: Primary revenue metric (net without taxes)")
+        summary.append("- net_revenue: Alternative revenue metric")
+        summary.append("- VentasCajasUnidad: Units/cases sold")
+        summary.append("- bottles_sold_m: Volume in bottles")
         summary.append("")
         
         summary.append("IMPORTANT NOTES:")
-        for note in business_context.get('important_notes', []):
-            summary.append(f"- {note}")
+        summary.append("- Always use 'dev.' prefix for table names")
+        summary.append("- customer_id is the key field (NOT cliente_id)")
+        summary.append("- Nombre_cliente contains customer names")
+        summary.append("- Use IngresoNetoSImpuestos for revenue calculations")
+        summary.append("- Date filtering should use calday field in segmentacion")
         
         return "\n".join(summary)

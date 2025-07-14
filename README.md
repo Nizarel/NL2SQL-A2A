@@ -90,7 +90,7 @@ Create a `.env` file with:
 # Azure OpenAI (preferred)
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your_api_key
-AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
 
 # OR OpenAI (fallback)
 OPENAI_API_KEY=your_openai_api_key
