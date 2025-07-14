@@ -4,6 +4,7 @@ Sequential Pattern: SQLGenerator → Executor → Summarizer
 """
 
 import time
+import asyncio
 from typing import Dict, Any, List, Optional
 from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent
@@ -38,11 +39,13 @@ class OrchestratorAgent(BaseAgent):
         
         # Initialize Semantic Kernel AgentGroupChat for orchestration
         self.agent_group_chat: Optional[AgentGroupChat] = None
+        self._sk_orchestration_active = False  # Track if SK orchestration is in use
         self._initialize_sk_orchestration()
         
     def _initialize_sk_orchestration(self):
         """
         Initialize Semantic Kernel AgentGroupChat with Sequential Selection Strategy
+        Note: SK AgentGroupChat doesn't handle concurrency well, so we'll use it selectively
         """
         try:
             # Create execution settings for all agents
@@ -132,13 +135,27 @@ class OrchestratorAgent(BaseAgent):
             
             print(f"🎯 Orchestrating workflow for: {question}")
             
-            # Execute sequential workflow
-            if self.agent_group_chat:
-                # Use Semantic Kernel AgentGroupChat orchestration
-                result = await self._execute_sk_sequential_workflow(input_data)
+            # Determine orchestration strategy based on concurrency
+            # SK AgentGroupChat doesn't handle concurrency well, so use manual for concurrent requests
+            use_sk_orchestration = (
+                self.agent_group_chat is not None and 
+                not self._sk_orchestration_active
+            )
+            
+            if use_sk_orchestration:
+                # Try SK orchestration for single requests
+                self._sk_orchestration_active = True
+                try:
+                    print("🔄 Starting Semantic Kernel sequential orchestration...")
+                    result = await self._execute_sk_sequential_workflow(input_data)
+                finally:
+                    self._sk_orchestration_active = False
             else:
-                # Fallback to manual sequential orchestration
-                print("⚠️ Using manual sequential orchestration")
+                # Use manual orchestration for concurrent requests or if SK fails
+                if self._sk_orchestration_active:
+                    print("⚠️ SK orchestration busy, using manual sequential orchestration")
+                else:
+                    print("⚠️ Using manual sequential orchestration")
                 result = await self._execute_manual_sequential_workflow(input_data)
             
             # Add workflow timing metadata
@@ -186,8 +203,6 @@ WORKFLOW STEPS (Execute in this exact sequence):
 Each agent should complete their step and pass results to the next agent.
 """
             
-            print("🔄 Starting Semantic Kernel sequential orchestration...")
-            
             # Add the user message to the chat history first
             user_message = ChatMessageContent(
                 role=AuthorRole.USER, 
@@ -195,15 +210,32 @@ Each agent should complete their step and pass results to the next agent.
             )
             await self.agent_group_chat.add_chat_message(user_message)
             
-            # Execute the sequential agent group chat (no parameters needed)
+            # Execute the sequential agent group chat with error handling
             agent_responses = []
-            async for response in self.agent_group_chat.invoke():
-                print(f"🤖 {response.name if hasattr(response, 'name') else 'Agent'}: Processing step...")
-                agent_responses.append(response)
-                
-                # Optional: limit responses to prevent infinite loops
-                if len(agent_responses) >= 3:  # We expect 3 agents in sequence
-                    break
+            try:
+                # Execute the group chat and collect responses
+                async for response in self.agent_group_chat.invoke():
+                    print(f"🤖 {response.name if hasattr(response, 'name') else 'Agent'}: Processing step...")
+                    agent_responses.append(response)
+                    
+                    # Limit responses to prevent infinite loops
+                    if len(agent_responses) >= 3:  # We expect 3 agents in sequence
+                        break
+                        
+            except Exception as sk_error:
+                if "Unable to proceed while another agent is active" in str(sk_error):
+                    print("⚠️ SK orchestration busy (another agent active), using manual orchestration")
+                    self._sk_orchestration_active = False  # Reset the flag
+                    return await self._execute_manual_sequential_workflow(params)
+                else:
+                    print(f"❌ SK orchestration error: {str(sk_error)}")
+                    return await self._execute_manual_sequential_workflow(params)
+            except Exception as sk_error:
+                if "Unable to proceed while another agent is active" in str(sk_error):
+                    print("🔄 SK orchestration busy, falling back to manual workflow")
+                else:
+                    print(f"❌ SK orchestration error: {str(sk_error)}")
+                return await self._execute_manual_sequential_workflow(params)
             
             # Parse and integrate results from all agents
             return await self._parse_sk_workflow_results(agent_responses, params)

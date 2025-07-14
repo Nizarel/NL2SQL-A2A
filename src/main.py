@@ -229,130 +229,56 @@ class NL2SQLMultiAgentSystem:
             await self.mcp_plugin.close()
         print("🔐 Multi-Agent NL2SQL System closed successfully")
 
+    @classmethod
+    async def create_and_initialize(cls):
+        """
+        Factory method to create and initialize the system in one call
+        Production-ready convenience method
+        """
+        system = cls()
+        await system.initialize()
+        return system
+
+    async def process_query(self, question: str, **kwargs) -> dict:
+        """
+        Simplified interface for processing queries in production
+        
+        Args:
+            question: Natural language question
+            **kwargs: Optional parameters (execute, limit, include_summary, context)
+        
+        Returns:
+            Processed result dictionary
+        """
+        return await self.ask_question(question, **kwargs)
+
 
 async def main():
     """
-    Main function to demonstrate the Multi-Agent NL2SQL System
+    Production-ready main function for the Multi-Agent NL2SQL System
     """
+    print("🚀 Initializing Multi-Agent NL2SQL System...")
+    
     # Initialize the multi-agent system
     agent = NL2SQLMultiAgentSystem()
-    await agent.initialize()
     
     try:
-        # Example questions
-        test_questions = [
-            "Show me the top 10 customers by total revenue",
-            "What are the best selling products by category?", 
-            "Show me sales data for the last month",
-            "Which territories have the highest sales?",
-            "List all customers in the Universidad segment"
-        ]
+        await agent.initialize()
+        print("✅ System ready for processing queries")
         
-        print("\n" + "="*60)
-        print("🤖 MULTI-AGENT NL2SQL SYSTEM DEMO")
-        print("="*60)
+        # Example usage (can be removed in production)
+        # result = await agent.ask_question("Your question here")
+        # print(result)
         
-        # Test with a sample question
-        sample_question = "Show me the top 5 customers with their names and total revenue"
+        return agent
         
-        result = await agent.ask_question(
-            question=sample_question, 
-            execute=True, 
-            limit=10,
-            include_summary=True
-        )
-        
-        # Display results based on multi-agent workflow
-        if result["success"]:
-            print(f"\n✅ WORKFLOW COMPLETED SUCCESSFULLY!")
-            
-            data = result["data"]
-            metadata = result["metadata"]
-            
-            print(f"📝 Generated SQL: {data['sql_query']}")
-            
-            if data.get("executed"):
-                print(f"\n📊 Query Results:\n{data['results']}")
-                print(f"⏱️  Execution time: {metadata.get('execution_time', 'N/A')}s")
-                print(f"📈 Rows returned: {metadata.get('row_count', 'N/A')}")
-                
-                # Display AI-generated summary if available
-                if data.get("summary"):
-                    summary = data["summary"]
-                    print(f"\n🧠 AI INSIGHTS & SUMMARY:")
-                    print(f"Executive Summary: {summary['executive_summary']}")
-                    print(f"\nKey Insights:")
-                    for i, insight in enumerate(summary.get('key_insights', []), 1):
-                        print(f"  {i}. {insight.get('finding', 'N/A')}")
-                    
-                    print(f"\nRecommendations:")
-                    for i, rec in enumerate(summary.get('recommendations', []), 1):
-                        print(f"  {i}. {rec.get('action', 'N/A')} (Priority: {rec.get('priority', 'N/A')})")
-            else:
-                if data.get("execution_error"):
-                    print(f"\n❌ Execution Error: {data['execution_error']}")
-        else:
-            print(f"\n❌ WORKFLOW FAILED: {result['error']}")
-        
-        print("\n" + "="*60)
-        print("🎮 INTERACTIVE MODE")
-        print("Type your questions, 'status' for system status, or 'quit' to exit")
-        print("="*60)
-        
-        # Interactive mode
-        while True:
-            try:
-                user_input = input("\n🤔 Your question: ").strip()
-                
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    break
-                
-                if user_input.lower() == 'status':
-                    status_result = await agent.get_workflow_status()
-                    if status_result["success"]:
-                        status = status_result["data"]
-                        print(f"\n📊 System Status:")
-                        print(f"  Orchestrator: {status['orchestrator']}")
-                        print(f"  Agents: {status['agents']}")
-                        print(f"  Capabilities: {status['workflow_capabilities']}")
-                    continue
-                
-                if not user_input:
-                    continue
-                
-                result = await agent.ask_question(
-                    question=user_input, 
-                    execute=True, 
-                    limit=20,
-                    include_summary=True
-                )
-                
-                if result["success"]:
-                    data = result["data"]
-                    print(f"\n📝 SQL Query:\n{data['sql_query']}")
-                    
-                    if data.get("executed"):
-                        print(f"\n📊 Results:\n{data['results']}")
-                        
-                        # Show summary if available
-                        if data.get("summary"):
-                            summary = data["summary"]
-                            print(f"\n🧠 Executive Summary: {summary['executive_summary']}")
-                    else:
-                        if data.get("execution_error"):
-                            print(f"\n❌ Execution Error: {data['execution_error']}")
-                else:
-                    print(f"\n❌ Error: {result['error']}")
-                    
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                print(f"\n❌ Unexpected error: {str(e)}")
-        
-    finally:
-        await agent.close()
+    except Exception as e:
+        print(f"❌ Failed to initialize system: {str(e)}")
+        raise
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Multi-Agent NL2SQL System...")
+    """
+    Entry point for production deployment
+    """
     asyncio.run(main())
