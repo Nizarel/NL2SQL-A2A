@@ -1,6 +1,6 @@
 """
-NL2SQL Agent - Natural Language to SQL Converter
-Main application using Semantic Kernel with MCP Database Integration
+NL2SQL Multi-Agent System - Natural Language to SQL Converter
+Main application using Semantic Kernel 1.34.0 with specialized agents
 """
 
 import sys
@@ -14,12 +14,12 @@ from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureCha
 
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 from services.schema_service import SchemaService
-from services.nl2sql_service import NL2SQLService
+from agents import SQLGeneratorAgent, ExecutorAgent, SummarizingAgent, OrchestratorAgent
 
 
-class NL2SQLAgent:
+class NL2SQLMultiAgentSystem:
     """
-    Main NL2SQL Agent class that orchestrates the conversion process
+    Multi-Agent NL2SQL System that orchestrates specialized agents
     """
     
     def __init__(self):
@@ -40,11 +40,16 @@ class NL2SQLAgent:
         self.kernel = None
         self.mcp_plugin = None
         self.schema_service = None
-        self.nl2sql_service = None
+        
+        # Initialize specialized agents
+        self.sql_generator_agent = None
+        self.executor_agent = None
+        self.summarizing_agent = None
+        self.orchestrator_agent = None
         
     async def initialize(self):
         """
-        Initialize all components of the NL2SQL Agent
+        Initialize all components of the Multi-Agent NL2SQL System
         """
         try:
             # Initialize Semantic Kernel
@@ -68,13 +73,34 @@ class NL2SQLAgent:
             schema_context = await self.schema_service.initialize_schema_context()
             print("✅ Schema context initialized successfully!")
             
-            # Initialize NL2SQL Service
-            self.nl2sql_service = NL2SQLService(self.kernel, self.schema_service, self.mcp_plugin)
+            # Initialize specialized agents
+            print("🤖 Initializing specialized agents...")
             
-            print("🚀 NL2SQL Agent initialized successfully!")
+            # SQL Generator Agent
+            self.sql_generator_agent = SQLGeneratorAgent(self.kernel, self.schema_service)
+            print("✅ SQL Generator Agent initialized")
+            
+            # Executor Agent  
+            self.executor_agent = ExecutorAgent(self.kernel, self.mcp_plugin)
+            print("✅ Executor Agent initialized")
+            
+            # Summarizing Agent
+            self.summarizing_agent = SummarizingAgent(self.kernel)
+            print("✅ Summarizing Agent initialized")
+            
+            # Orchestrator Agent
+            self.orchestrator_agent = OrchestratorAgent(
+                self.kernel, 
+                self.sql_generator_agent,
+                self.executor_agent, 
+                self.summarizing_agent
+            )
+            print("✅ Orchestrator Agent initialized")
+            
+            print("🚀 Multi-Agent NL2SQL System initialized successfully!")
             
         except Exception as e:
-            print(f"❌ Error initializing NL2SQL Agent: {str(e)}")
+            print(f"❌ Error initializing Multi-Agent NL2SQL System: {str(e)}")
             raise
     
     async def _setup_ai_service(self):
@@ -123,26 +149,35 @@ class NL2SQLAgent:
         
         raise ValueError("No AI service configuration found. Please set up either Azure OpenAI or OpenAI credentials in .env file")
     
-    async def ask_question(self, question: str, execute: bool = True, limit: int = 100) -> dict:
+    async def ask_question(self, question: str, execute: bool = True, limit: int = 100, 
+                          include_summary: bool = True, context: str = "") -> dict:
         """
-        Process a natural language question
+        Process a natural language question using the multi-agent system
         
         Args:
             question: Natural language question about the data
             execute: Whether to execute the generated SQL query
             limit: Maximum number of rows to return
+            include_summary: Whether to generate AI summary and insights
+            context: Optional additional context for the question
             
         Returns:
-            Dictionary containing the results
+            Dictionary containing the complete workflow results
         """
-        if not self.nl2sql_service:
-            raise ValueError("Agent not initialized. Call initialize() first.")
+        if not self.orchestrator_agent:
+            raise ValueError("Multi-Agent System not initialized. Call initialize() first.")
         
         print(f"\n🤔 Question: {question}")
-        print("🔄 Converting to SQL...")
+        print("🔄 Starting multi-agent workflow...")
         
-        # Convert question to SQL and optionally execute
-        result = await self.nl2sql_service.convert_question_to_sql(question, execute, limit)
+        # Use orchestrator to coordinate the workflow
+        result = await self.orchestrator_agent.process({
+            "question": question,
+            "context": context,
+            "execute": execute,
+            "limit": limit,
+            "include_summary": include_summary
+        })
         
         return result
     
@@ -164,73 +199,148 @@ class NL2SQLAgent:
         
         return self.schema_service.get_full_schema_summary()
     
+    async def get_workflow_status(self) -> dict:
+        """
+        Get the status of all agents in the system
+        """
+        if not self.orchestrator_agent:
+            raise ValueError("Multi-Agent System not initialized. Call initialize() first.")
+        
+        return await self.orchestrator_agent.get_workflow_status()
+    
+    async def execute_single_step(self, step: str, input_data: dict) -> dict:
+        """
+        Execute a single workflow step for testing or debugging
+        
+        Args:
+            step: Step name ('sql_generation', 'execution', 'summarization')
+            input_data: Input data for the specific step
+        """
+        if not self.orchestrator_agent:
+            raise ValueError("Multi-Agent System not initialized. Call initialize() first.")
+        
+        return await self.orchestrator_agent.execute_single_step(step, input_data)
+    
     async def close(self):
         """
         Close all connections and cleanup resources
         """
         if self.mcp_plugin:
             await self.mcp_plugin.close()
-        print("🔐 NL2SQL Agent closed successfully")
+        print("🔐 Multi-Agent NL2SQL System closed successfully")
 
 
 async def main():
     """
-    Main function to demonstrate the NL2SQL Agent
+    Main function to demonstrate the Multi-Agent NL2SQL System
     """
-    # Initialize the agent
-    agent = NL2SQLAgent()
+    # Initialize the multi-agent system
+    agent = NL2SQLMultiAgentSystem()
     await agent.initialize()
     
     try:
         # Example questions
         test_questions = [
             "Show me the top 10 customers by total revenue",
-            "What are the best selling products by category?",
+            "What are the best selling products by category?", 
             "Show me sales data for the last month",
             "Which territories have the highest sales?",
             "List all customers in the Universidad segment"
         ]
         
         print("\n" + "="*60)
-        print("🎯 NL2SQL AGENT DEMO")
+        print("🤖 MULTI-AGENT NL2SQL SYSTEM DEMO")
         print("="*60)
         
         # Test with a sample question
         sample_question = "Show me the top 5 customers with their names and total revenue"
         
-        result = await agent.ask_question(sample_question, execute=True, limit=10)
+        result = await agent.ask_question(
+            question=sample_question, 
+            execute=True, 
+            limit=10,
+            include_summary=True
+        )
         
-        if result["error"] is None:
-            print(f"\n✅ SUCCESS!")
-            print(f"📝 Generated SQL: {result['sql_query']}")
-            if result["executed"] and result["results"]:
-                print(f"\n📊 Results:\n{result['results']}")
-                print(f"⏱️  Execution time: {result['execution_time']}s")
-                print(f"� Rows returned: {result['row_count']}")
+        # Display results based on multi-agent workflow
+        if result["success"]:
+            print(f"\n✅ WORKFLOW COMPLETED SUCCESSFULLY!")
+            
+            data = result["data"]
+            metadata = result["metadata"]
+            
+            print(f"📝 Generated SQL: {data['sql_query']}")
+            
+            if data.get("executed"):
+                print(f"\n📊 Query Results:\n{data['results']}")
+                print(f"⏱️  Execution time: {metadata.get('execution_time', 'N/A')}s")
+                print(f"📈 Rows returned: {metadata.get('row_count', 'N/A')}")
+                
+                # Display AI-generated summary if available
+                if data.get("summary"):
+                    summary = data["summary"]
+                    print(f"\n🧠 AI INSIGHTS & SUMMARY:")
+                    print(f"Executive Summary: {summary['executive_summary']}")
+                    print(f"\nKey Insights:")
+                    for i, insight in enumerate(summary.get('key_insights', []), 1):
+                        print(f"  {i}. {insight.get('finding', 'N/A')}")
+                    
+                    print(f"\nRecommendations:")
+                    for i, rec in enumerate(summary.get('recommendations', []), 1):
+                        print(f"  {i}. {rec.get('action', 'N/A')} (Priority: {rec.get('priority', 'N/A')})")
+            else:
+                if data.get("execution_error"):
+                    print(f"\n❌ Execution Error: {data['execution_error']}")
         else:
-            print(f"\n❌ ERROR: {result['error']}")
+            print(f"\n❌ WORKFLOW FAILED: {result['error']}")
         
         print("\n" + "="*60)
         print("🎮 INTERACTIVE MODE")
-        print("Type your questions or 'quit' to exit")
+        print("Type your questions, 'status' for system status, or 'quit' to exit")
         print("="*60)
         
         # Interactive mode
         while True:
             try:
-                user_question = input("\n🤔 Your question: ").strip()
+                user_input = input("\n🤔 Your question: ").strip()
                 
-                if user_question.lower() in ['quit', 'exit', 'q']:
+                if user_input.lower() in ['quit', 'exit', 'q']:
                     break
                 
-                if not user_question:
+                if user_input.lower() == 'status':
+                    status_result = await agent.get_workflow_status()
+                    if status_result["success"]:
+                        status = status_result["data"]
+                        print(f"\n📊 System Status:")
+                        print(f"  Orchestrator: {status['orchestrator']}")
+                        print(f"  Agents: {status['agents']}")
+                        print(f"  Capabilities: {status['workflow_capabilities']}")
                     continue
                 
-                result = await agent.ask_question(user_question, execute=True, limit=20)
+                if not user_input:
+                    continue
                 
-                if result["error"] is None:
-                    print(f"\n📝 SQL Query:\n{result['sql_query']}")
-                    print(f"\n📊 Results:\n{result['results']}")
+                result = await agent.ask_question(
+                    question=user_input, 
+                    execute=True, 
+                    limit=20,
+                    include_summary=True
+                )
+                
+                if result["success"]:
+                    data = result["data"]
+                    print(f"\n📝 SQL Query:\n{data['sql_query']}")
+                    
+                    if data.get("executed"):
+                        print(f"\n📊 Results:\n{data['results']}")
+                        
+                        # Show summary if available
+                        if data.get("summary"):
+                            summary = data["summary"]
+                            print(f"\n🧠 Executive Summary: {summary['executive_summary']}")
+                    else:
+                        if data.get("execution_error"):
+                            print(f"\n❌ Execution Error: {data['execution_error']}")
                 else:
                     print(f"\n❌ Error: {result['error']}")
                     
@@ -244,5 +354,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    print("🚀 Starting NL2SQL Agent...")
+    print("🚀 Starting Multi-Agent NL2SQL System...")
     asyncio.run(main())
