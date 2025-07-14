@@ -3,7 +3,13 @@ Summarizing Agent - Analyzes raw data and generates business insights
 """
 
 from typing import Dict, Any, List
+import os
 from semantic_kernel import Kernel
+from semantic_kernel.functions import KernelFunctionFromPrompt
+from semantic_kernel.prompt_template import PromptTemplateConfig
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
+from semantic_kernel.contents import ChatHistory
+from semantic_kernel.functions import KernelArguments
 
 from agents.base_agent import BaseAgent
 
@@ -15,6 +21,61 @@ class SummarizingAgent(BaseAgent):
     
     def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SummarizingAgent")
+        self.templates = {}
+        self._setup_templates()
+        
+    def _setup_templates(self):
+        """Setup Jinja2 templates for different analysis types"""
+        template_dir = os.path.join(os.path.dirname(__file__), '..', 'templates')
+        
+        # Template configurations
+        template_configs = {
+            'comprehensive_summary': {
+                'file': 'comprehensive_summary.jinja2',
+                'name': 'comprehensive_summary_function',
+                'description': 'Generate comprehensive business summary from query results'
+            },
+            'insights_extraction': {
+                'file': 'insights_extraction.jinja2', 
+                'name': 'insights_extraction_function',
+                'description': 'Extract key business insights from data analysis'
+            },
+            'recommendations': {
+                'file': 'recommendations.jinja2',
+                'name': 'recommendations_function', 
+                'description': 'Generate actionable business recommendations'
+            }
+        }
+        
+        # Load and create kernel functions for each template
+        for template_key, config in template_configs.items():
+            template_path = os.path.join(template_dir, config['file'])
+            
+            if os.path.exists(template_path):
+                with open(template_path, 'r') as f:
+                    template_content = f.read()
+                
+                # Create prompt template config with proper execution settings
+                prompt_config = PromptTemplateConfig(
+                    template=template_content,
+                    name=config['name'],
+                    description=config['description'],
+                    template_format="jinja2",
+                    execution_settings={
+                        "default": {
+                            "max_tokens": 800,
+                            "temperature": 0.2
+                        }
+                    }
+                )
+                
+                # Create kernel function from template
+                self.templates[template_key] = KernelFunctionFromPrompt(
+                    function_name=config['name'],
+                    prompt_template_config=prompt_config
+                )
+            else:
+                raise FileNotFoundError(f"Template file not found: {template_path}")
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -31,219 +92,146 @@ class SummarizingAgent(BaseAgent):
         Returns:
             Dictionary containing summary and insights
         """
-        try:
-            raw_results = input_data.get("raw_results", "")
-            formatted_results = input_data.get("formatted_results", {})
-            sql_query = input_data.get("sql_query", "")
-            question = input_data.get("question", "")
-            metadata = input_data.get("metadata", {})
-            
-            if not raw_results and not formatted_results:
-                return self._create_result(
-                    success=False,
-                    error="No data provided for summarization"
-                )
-            
-            # Generate different types of summaries
-            summary_result = await self._generate_comprehensive_summary(
-                question, sql_query, formatted_results, metadata
-            )
-            
-            # Extract key insights
-            insights = await self._extract_key_insights(formatted_results, question)
-            
-            # Generate business recommendations
-            recommendations = await self._generate_recommendations(
-                formatted_results, question, insights
-            )
-            
-            return self._create_result(
-                success=True,
-                data={
-                    "executive_summary": summary_result["executive_summary"],
-                    "key_insights": insights,
-                    "recommendations": recommendations,
-                    "data_overview": summary_result["data_overview"],
-                    "technical_summary": summary_result["technical_summary"]
-                },
-                metadata={
-                    "data_quality_score": self._assess_data_quality(formatted_results),
-                    "insight_confidence": summary_result.get("confidence", 0.8),
-                    "summary_type": self._determine_summary_type(question)
-                }
-            )
-            
-        except Exception as e:
+        raw_results = input_data.get("raw_results", "")
+        formatted_results = input_data.get("formatted_results", {})
+        sql_query = input_data.get("sql_query", "")
+        question = input_data.get("question", "")
+        metadata = input_data.get("metadata", {})
+        
+        if not raw_results and not formatted_results:
             return self._create_result(
                 success=False,
-                error=f"Summarization failed: {str(e)}"
+                error="No data provided for summarization"
             )
+        
+        # Generate different types of summaries
+        summary_result = await self._generate_comprehensive_summary(
+            question, sql_query, formatted_results, metadata
+        )
+        
+        # Extract key insights
+        insights = await self._extract_key_insights(formatted_results, question)
+        
+        # Generate business recommendations
+        recommendations = await self._generate_recommendations(
+            formatted_results, question, insights
+        )
+        
+        return self._create_result(
+            success=True,
+            data={
+                "executive_summary": summary_result["executive_summary"],
+                "key_insights": insights,
+                "recommendations": recommendations,
+                "data_overview": summary_result["data_overview"],
+                "technical_summary": summary_result["technical_summary"]
+            },
+            metadata={
+                "data_quality_score": self._assess_data_quality(formatted_results),
+                "insight_confidence": summary_result.get("confidence", 0.8),
+                "summary_type": self._determine_summary_type(question)
+            }
+        )
     
     async def _generate_comprehensive_summary(self, question: str, sql_query: str, 
                                            formatted_results: Dict[str, Any], 
                                            metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate comprehensive summary of the results
+        Generate comprehensive summary of the results using template
         """
-        summary_prompt = f"""
-Analyze the following business query results and provide a comprehensive summary:
-
-ORIGINAL QUESTION: {question}
-
-SQL QUERY EXECUTED:
-{sql_query}
-
-QUERY RESULTS:
-{self._format_results_for_analysis(formatted_results)}
-
-EXECUTION METADATA:
-- Execution Time: {metadata.get('execution_time', 'N/A')} seconds
-- Rows Returned: {metadata.get('row_count', 'N/A')}
-- Query Type: {metadata.get('query_type', 'N/A')}
-
-Please provide:
-
-1. EXECUTIVE SUMMARY (2-3 sentences):
-   A high-level business summary that answers the user's question directly.
-
-2. DATA OVERVIEW:
-   Key statistics and patterns found in the data.
-
-3. TECHNICAL SUMMARY:
-   Brief technical details about the query execution and data quality.
-
-Format your response as:
-EXECUTIVE_SUMMARY: [your executive summary]
-DATA_OVERVIEW: [your data overview]
-TECHNICAL_SUMMARY: [your technical summary]
-"""
+        # Prepare template arguments
+        args = KernelArguments(
+            question=question,
+            sql_query=sql_query,
+            formatted_results_analysis=self._format_results_for_analysis(formatted_results),
+            metadata=metadata
+        )
         
-        try:
-            response = await self._get_ai_response(summary_prompt, max_tokens=800, temperature=0.2)
-            
-            # Parse the structured response
-            summary_parts = self._parse_structured_response(response)
-            
-            return {
-                "executive_summary": summary_parts.get("EXECUTIVE_SUMMARY", "Summary generation failed"),
-                "data_overview": summary_parts.get("DATA_OVERVIEW", "Data overview not available"),
-                "technical_summary": summary_parts.get("TECHNICAL_SUMMARY", "Technical details not available"),
-                "confidence": 0.85
-            }
-            
-        except Exception as e:
-            return {
-                "executive_summary": f"Summary generation error: {str(e)}",
-                "data_overview": "Unable to analyze data",
-                "technical_summary": "Technical analysis unavailable",
-                "confidence": 0.1
-            }
+        # Execute template function
+        response = await self.kernel.invoke(self.templates['comprehensive_summary'], args)
+        response_text = str(response)
+        
+        # Parse the structured response
+        summary_parts = self._parse_structured_response(response_text)
+        
+        return {
+            "executive_summary": summary_parts.get("EXECUTIVE_SUMMARY", "Summary generation failed"),
+            "data_overview": summary_parts.get("DATA_OVERVIEW", "Data overview not available"),
+            "technical_summary": summary_parts.get("TECHNICAL_SUMMARY", "Technical details not available"),
+            "confidence": 0.85
+        }
     
     async def _extract_key_insights(self, formatted_results: Dict[str, Any], question: str) -> List[Dict[str, Any]]:
         """
-        Extract key business insights from the data
+        Extract key business insights from the data using template
         """
-        insights_prompt = f"""
-Analyze this business data and extract 3-5 key insights:
-
-BUSINESS QUESTION: {question}
-
-DATA:
-{self._format_results_for_analysis(formatted_results)}
-
-Extract key insights that would be valuable to business stakeholders. For each insight:
-1. Identify the specific finding
-2. Explain its business significance
-3. Provide supporting data points
-
-Format each insight as:
-INSIGHT_[NUMBER]: [Finding] | [Business Significance] | [Supporting Data]
-
-Example:
-INSIGHT_1: Top customer generates 25% of total revenue | High customer concentration risk | Customer XYZ: $43M revenue
-"""
+        # Prepare template arguments
+        args = KernelArguments(
+            question=question,
+            formatted_results_analysis=self._format_results_for_analysis(formatted_results)
+        )
         
-        try:
-            response = await self._get_ai_response(insights_prompt, max_tokens=600, temperature=0.3)
-            
-            # Parse insights from response
-            insights = []
-            lines = response.split('\n')
-            
-            for line in lines:
-                if line.startswith('INSIGHT_'):
-                    parts = line.split('|', 2)
-                    if len(parts) >= 3:
-                        insight_text = parts[0].split(':', 1)[1].strip()
-                        significance = parts[1].strip()
-                        supporting_data = parts[2].strip()
-                        
-                        insights.append({
-                            "finding": insight_text,
-                            "business_significance": significance,
-                            "supporting_data": supporting_data,
-                            "confidence": 0.8
-                        })
-            
-            return insights if insights else [{"finding": "No specific insights extracted", "business_significance": "Analysis inconclusive", "supporting_data": "Insufficient data", "confidence": 0.2}]
-            
-        except Exception as e:
-            return [{"finding": f"Insight extraction failed: {str(e)}", "business_significance": "Unable to determine", "supporting_data": "Error in analysis", "confidence": 0.1}]
+        # Execute template function
+        response = await self.kernel.invoke(self.templates['insights_extraction'], args)
+        response_text = str(response)
+        
+        # Parse insights from response
+        insights = []
+        lines = response_text.split('\n')
+        
+        for line in lines:
+            if line.startswith('INSIGHT_'):
+                parts = line.split('|', 2)
+                if len(parts) >= 3:
+                    insight_text = parts[0].split(':', 1)[1].strip()
+                    significance = parts[1].strip()
+                    supporting_data = parts[2].strip()
+                    
+                    insights.append({
+                        "finding": insight_text,
+                        "business_significance": significance,
+                        "supporting_data": supporting_data,
+                        "confidence": 0.8
+                    })
+        
+        return insights if insights else [{"finding": "No specific insights extracted", "business_significance": "Analysis inconclusive", "supporting_data": "Insufficient data", "confidence": 0.2}]
     
     async def _generate_recommendations(self, formatted_results: Dict[str, Any], 
                                       question: str, insights: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Generate actionable business recommendations
+        Generate actionable business recommendations using template
         """
-        recommendations_prompt = f"""
-Based on the following business question, data analysis, and insights, provide 2-4 actionable recommendations:
-
-BUSINESS QUESTION: {question}
-
-KEY INSIGHTS:
-{self._format_insights_for_prompt(insights)}
-
-DATA CONTEXT:
-{self._format_results_for_analysis(formatted_results)}
-
-Provide specific, actionable recommendations that business stakeholders can implement. Each recommendation should:
-1. Be specific and actionable
-2. Address a business opportunity or risk
-3. Be based on the data findings
-
-Format each recommendation as:
-RECOMMENDATION_[NUMBER]: [Action] | [Expected Outcome] | [Priority: High/Medium/Low]
-
-Example:
-RECOMMENDATION_1: Focus marketing efforts on top-performing customer segments | Increase revenue by 15-20% | Priority: High
-"""
+        # Prepare template arguments
+        args = KernelArguments(
+            question=question,
+            formatted_insights=self._format_insights_for_prompt(insights),
+            formatted_results_analysis=self._format_results_for_analysis(formatted_results)
+        )
         
-        try:
-            response = await self._get_ai_response(recommendations_prompt, max_tokens=500, temperature=0.4)
-            
-            # Parse recommendations from response
-            recommendations = []
-            lines = response.split('\n')
-            
-            for line in lines:
-                if line.startswith('RECOMMENDATION_'):
-                    parts = line.split('|', 2)
-                    if len(parts) >= 3:
-                        action = parts[0].split(':', 1)[1].strip()
-                        outcome = parts[1].strip()
-                        priority = parts[2].replace('Priority:', '').strip()
-                        
-                        recommendations.append({
-                            "action": action,
-                            "expected_outcome": outcome,
-                            "priority": priority,
-                            "confidence": 0.75
-                        })
-            
-            return recommendations if recommendations else [{"action": "Review data quality and methodology", "expected_outcome": "Better insights in future analysis", "priority": "Medium", "confidence": 0.5}]
-            
-        except Exception as e:
-            return [{"action": f"Recommendation generation failed: {str(e)}", "expected_outcome": "Unable to determine", "priority": "Low", "confidence": 0.1}]
+        # Execute template function
+        response = await self.kernel.invoke(self.templates['recommendations'], args)
+        response_text = str(response)
+        
+        # Parse recommendations from response
+        recommendations = []
+        lines = response_text.split('\n')
+        
+        for line in lines:
+            if line.startswith('RECOMMENDATION_'):
+                parts = line.split('|', 2)
+                if len(parts) >= 3:
+                    action = parts[0].split(':', 1)[1].strip()
+                    outcome = parts[1].strip()
+                    priority = parts[2].replace('Priority:', '').strip()
+                    
+                    recommendations.append({
+                        "action": action,
+                        "expected_outcome": outcome,
+                        "priority": priority,
+                        "confidence": 0.75
+                    })
+        
+        return recommendations if recommendations else [{"action": "Review data quality and methodology", "expected_outcome": "Better insights in future analysis", "priority": "Medium", "confidence": 0.5}]
     
     def _format_results_for_analysis(self, formatted_results: Dict[str, Any]) -> str:
         """
