@@ -14,7 +14,7 @@ from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureCha
 
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 from services.schema_service import SchemaService
-from agents import SQLGeneratorAgent, ExecutorAgent, SummarizingAgent, OrchestratorAgent
+from agents import SQLGeneratorAgent, SQLExecutorAgent, SummarizingAgent, OrchestratorAgent
 
 
 class NL2SQLMultiAgentSystem:
@@ -43,7 +43,7 @@ class NL2SQLMultiAgentSystem:
         
         # Initialize specialized agents
         self.sql_generator_agent = None
-        self.executor_agent = None
+        self.sql_executor_agent = None
         self.summarizing_agent = None
         self.orchestrator_agent = None
         
@@ -81,7 +81,7 @@ class NL2SQLMultiAgentSystem:
             print("✅ SQL Generator Agent initialized")
             
             # Executor Agent  
-            self.executor_agent = ExecutorAgent(self.kernel, self.mcp_plugin)
+            self.sql_executor_agent = SQLExecutorAgent(self.kernel, self.mcp_plugin)
             print("✅ Executor Agent initialized")
             
             # Summarizing Agent
@@ -92,7 +92,7 @@ class NL2SQLMultiAgentSystem:
             self.orchestrator_agent = OrchestratorAgent(
                 self.kernel, 
                 self.sql_generator_agent,
-                self.executor_agent, 
+                self.sql_executor_agent, 
                 self.summarizing_agent
             )
             print("✅ Orchestrator Agent initialized")

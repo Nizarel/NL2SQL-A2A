@@ -12,7 +12,7 @@ from agents.base_agent import BaseAgent
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 
 
-class ExecutorAgent(BaseAgent):
+class SQLExecutorAgent(BaseAgent):
     """
     Agent responsible for executing SQL queries against the database
     Uses GPT-4o-mini for cost optimization since it primarily handles data formatting

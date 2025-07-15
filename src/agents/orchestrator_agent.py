@@ -16,7 +16,7 @@ from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoic
 
 from .base_agent import BaseAgent
 from .sql_generator_agent import SQLGeneratorAgent
-from .executor_agent import ExecutorAgent
+from .sql_executor_agent import SQLExecutorAgent
 from .summarizing_agent import SummarizingAgent
 
 
@@ -24,12 +24,12 @@ class OrchestratorAgent(BaseAgent):
     """
     Agent responsible for orchestrating the sequential multi-agent workflow:
     1. SQLGeneratorAgent: Converts natural language to SQL
-    2. ExecutorAgent: Executes the generated SQL query
+    2. SQLExecutorAgent: Executes the generated SQL query
     3. SummarizingAgent: Analyzes results and generates insights
     """
     
     def __init__(self, kernel: Kernel, sql_generator: SQLGeneratorAgent, 
-                 executor: ExecutorAgent, summarizer: SummarizingAgent):
+                 executor: SQLExecutorAgent, summarizer: SummarizingAgent):
         super().__init__(kernel, "OrchestratorAgent")
         
         # Store agent references
@@ -70,7 +70,7 @@ class OrchestratorAgent(BaseAgent):
             
             query_executor_agent = ChatCompletionAgent(
                 kernel=self.kernel,
-                name="ExecutorAgent",
+                name="SQLExecutorAgent",
                 instructions="""You are a SQL execution specialist. Your role is to:
 1. Execute SQL queries safely against the database
 2. Validate queries before execution (only SELECT allowed)
@@ -197,7 +197,7 @@ Database Schema Context:
 
 WORKFLOW STEPS (Execute in this exact sequence):
 1. SQLGeneratorAgent: Generate SQL query from the question
-2. ExecutorAgent: Execute the SQL query and return results  
+2. SQLExecutorAgent: Execute the SQL query and return results  
 3. SummarizingAgent: Analyze results and provide business insights
 
 Each agent should complete their step and pass results to the next agent.
@@ -389,7 +389,7 @@ Each agent should complete their step and pass results to the next agent.
                 # Now execute the cleaned SQL using our specialized agents for real execution
                 print("🔄 Executing extracted SQL through specialized agents...")
                 
-                # Use our real ExecutorAgent to execute the SQL
+                # Use our real SQLExecutorAgent to execute the SQL
                 execution_result = await self.executor.process({
                     "sql_query": cleaned_sql,
                     "limit": params.get("limit", 100),
@@ -539,6 +539,150 @@ Each agent should complete their step and pass results to the next agent.
                 }
             }
         )
+    
+    async def stream(self, query: str, context_id: str):
+        """
+        Streaming method for A2A compatibility
+        Yields partial results during workflow execution
+        
+        Args:
+            query: Natural language query to process
+            context_id: Context ID for tracking the workflow
+            
+        Yields:
+            Dict containing:
+                - content: Current status or result text
+                - require_user_input: Whether user input is needed
+                - is_task_complete: Whether the task is finished
+        """
+        try:
+            # Start workflow
+            yield {
+                'content': f"🎯 Starting NL2SQL workflow for: {query}",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            # Execute the full workflow with streaming updates
+            input_data = {
+                "question": query,
+                "execute": True,
+                "limit": 100,
+                "include_summary": True,
+                "context": ""
+            }
+            
+            # Step 1: SQL Generation
+            yield {
+                'content': "🧠 Step 1/3: Analyzing query and generating SQL...",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            sql_result = await self.sql_generator.process({
+                "question": query,
+                "context": ""
+            })
+            
+            if not sql_result.get("success"):
+                yield {
+                    'content': f"❌ SQL Generation failed: {sql_result.get('error', 'Unknown error')}",
+                    'require_user_input': False,
+                    'is_task_complete': True
+                }
+                return
+            
+            sql_query = sql_result["data"]["sql_query"]
+            yield {
+                'content': f"✅ Generated SQL: {sql_query}",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            # Step 2: SQL Execution
+            yield {
+                'content': "⚡ Step 2/3: Executing SQL query...",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            execution_result = await self.executor.process({
+                "sql_query": sql_query,
+                "limit": 100,
+                "timeout": 30
+            })
+            
+            if not execution_result.get("success"):
+                yield {
+                    'content': f"❌ SQL Execution failed: {execution_result.get('error', 'Unknown error')}",
+                    'require_user_input': False,
+                    'is_task_complete': True
+                }
+                return
+            
+            results = execution_result["data"]
+            row_count = results.get("row_count", 0)
+            yield {
+                'content': f"✅ Query executed successfully. Retrieved {row_count} rows.",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            # Step 3: Summarization
+            yield {
+                'content': "📊 Step 3/3: Generating business insights...",
+                'require_user_input': False,
+                'is_task_complete': False
+            }
+            
+            summary_result = await self.summarizer.process({
+                "raw_results": results.get("raw_results", ""),
+                "formatted_results": results.get("formatted_results", {}),
+                "sql_query": sql_query,
+                "question": query,
+                "metadata": execution_result.get("metadata", {})
+            })
+            
+            if not summary_result.get("success"):
+                yield {
+                    'content': f"⚠️ Summary generation failed: {summary_result.get('error', 'Unknown error')}",
+                    'require_user_input': False,
+                    'is_task_complete': True
+                }
+                return
+            
+            # Final result
+            final_summary = summary_result["data"]["summary"]
+            insights = summary_result["data"].get("insights", [])
+            
+            final_content = f"""✅ NL2SQL Workflow Complete!
+
+📋 **Summary:**
+{final_summary}
+
+🔍 **SQL Query:**
+```sql
+{sql_query}
+```
+
+📊 **Results:** {row_count} rows retrieved
+
+💡 **Key Insights:**
+{chr(10).join(f"• {insight}" for insight in insights[:5])}
+"""
+            
+            yield {
+                'content': final_content,
+                'require_user_input': False,
+                'is_task_complete': True
+            }
+            
+        except Exception as e:
+            yield {
+                'content': f"❌ Workflow failed: {str(e)}",
+                'require_user_input': False,
+                'is_task_complete': True
+            }
 
 
 

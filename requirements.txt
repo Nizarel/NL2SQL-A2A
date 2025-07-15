@@ -1,7 +1,7 @@
 # Core NL2SQL Dependencies
 semantic-kernel==1.34.0
 fastmcp
-fasta2a
+a2a-sdk
 python-dotenv
 aiohttp
 httpx
