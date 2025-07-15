@@ -1,0 +1,25 @@
+Analyze the user's intent from this business question:
+
+Question: {{ question }}
+{% if context %}
+Additional Context: {{ context }}
+{% endif %}
+
+Identify:
+1. Primary objective (what they want to know)
+2. Key entities (customers, products, sales, time periods, etc.)
+3. Metrics needed (revenue, count, average, etc.)
+4. Filters or conditions
+5. Grouping requirements
+6. Sorting preferences
+
+Return your analysis in this JSON format:
+{
+    "objective": "description of what user wants",
+    "entities": ["entity1", "entity2"],
+    "metrics": ["metric1", "metric2"],
+    "filters": ["filter1", "filter2"],
+    "grouping": ["group_by_field1"],
+    "sorting": {"field": "sort_field", "direction": "ASC/DESC"},
+    "time_period": "specific time period if mentioned"
+}

@@ -3,8 +3,12 @@ SQL Generator Agent - Analyzes user intent and generates SQL queries
 """
 
 import re
+import os
 from typing import Dict, Any
 from semantic_kernel import Kernel
+from semantic_kernel.prompt_template import PromptTemplateConfig
+from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
+from semantic_kernel.functions import KernelFunctionFromPrompt
 
 from agents.base_agent import BaseAgent
 from services.schema_service import SchemaService
@@ -18,6 +22,66 @@ class SQLGeneratorAgent(BaseAgent):
     def __init__(self, kernel: Kernel, schema_service: SchemaService):
         super().__init__(kernel, "SQLGeneratorAgent")
         self.schema_service = schema_service
+        self._setup_templates()
+        
+    def _setup_templates(self):
+        """
+        Setup Jinja2 templates for intent analysis and SQL generation
+        """
+        # Get the templates directory
+        templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
+        
+        try:
+            # Load intent analysis template
+            intent_template_path = os.path.join(templates_dir, 'intent_analysis.jinja2')
+            with open(intent_template_path, 'r', encoding='utf-8') as f:
+                intent_template_content = f.read()
+            
+            # Load SQL generation template
+            sql_template_path = os.path.join(templates_dir, 'sql_generation.jinja2')
+            with open(sql_template_path, 'r', encoding='utf-8') as f:
+                sql_template_content = f.read()
+                
+        except FileNotFoundError as e:
+            raise FileNotFoundError(f"Template file not found: {e}. Please ensure template files exist in {templates_dir}")
+        except Exception as e:
+            raise Exception(f"Error loading template files: {e}")
+        
+        # Create prompt template configs
+        intent_config = PromptTemplateConfig(
+            template=intent_template_content,
+            name="intent_analysis",
+            template_format="jinja2",
+            execution_settings={
+                "default": PromptExecutionSettings(
+                    max_tokens=500,
+                    temperature=0.1
+                )
+            }
+        )
+        
+        sql_config = PromptTemplateConfig(
+            template=sql_template_content,
+            name="sql_generation", 
+            template_format="jinja2",
+            execution_settings={
+                "default": PromptExecutionSettings(
+                    max_tokens=800,
+                    temperature=0.1
+                )
+            }
+        )
+        
+        # Create kernel functions from templates
+        self.intent_analysis_function = KernelFunctionFromPrompt(
+            function_name="analyze_intent",
+            prompt_template_config=intent_config
+        )
+        
+        self.sql_generation_function = KernelFunctionFromPrompt(
+            function_name="generate_sql",
+            prompt_template_config=sql_config
+        )
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -74,119 +138,55 @@ class SQLGeneratorAgent(BaseAgent):
     
     async def _analyze_intent(self, question: str, context: str = "") -> Dict[str, Any]:
         """
-        Analyze user intent from the question
+        Analyze user intent from the question using Jinja2 template
         """
-        intent_prompt = f"""
-Analyze the user's intent from this business question:
-
-Question: {question}
-{f"Additional Context: {context}" if context else ""}
-
-Identify:
-1. Primary objective (what they want to know)
-2. Key entities (customers, products, sales, time periods, etc.)
-3. Metrics needed (revenue, count, average, etc.)
-4. Filters or conditions
-5. Grouping requirements
-6. Sorting preferences
-
-Return your analysis in this JSON format:
-{{
-    "objective": "description of what user wants",
-    "entities": ["entity1", "entity2"],
-    "metrics": ["metric1", "metric2"],
-    "filters": ["filter1", "filter2"],
-    "grouping": ["group_by_field1"],
-    "sorting": {{"field": "sort_field", "direction": "ASC/DESC"}},
-    "time_period": "specific time period if mentioned"
-}}
-"""
-        
         try:
-            response = await self._get_ai_response(intent_prompt, max_tokens=500, temperature=0.1)
-            # Parse JSON response (simplified - in production, add proper JSON parsing)
+            # Create kernel arguments for the template
+            from semantic_kernel.functions import KernelArguments
+            
+            arguments = KernelArguments(
+                question=question,
+                context=context if context else None
+            )
+            
+            # Invoke the intent analysis function
+            result = await self.kernel.invoke(
+                self.intent_analysis_function,
+                arguments
+            )
+            
+            # Parse the result
+            response = str(result).strip()
             return {"analysis": response}
+            
         except Exception as e:
             return {"analysis": f"Intent analysis failed: {str(e)}"}
     
     async def _generate_sql(self, question: str, schema_context: str, intent_analysis: Dict[str, Any]) -> str:
         """
-        Generate SQL query based on question and schema context
+        Generate SQL query based on question and schema context using Jinja2 template
         """
-        sql_prompt = f"""
-You are an expert SQL query generator for a Microsoft SQL Server business analytics database.
-
-USER QUESTION: {question}
-
-INTENT ANALYSIS:
-{intent_analysis.get('analysis', 'No intent analysis available')}
-
-DATABASE SCHEMA:
-{schema_context}
-
-CRITICAL SQL GENERATION RULES FOR SQL SERVER:
-1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
-2. **MANDATORY SQL SERVER SYNTAX ONLY**:
-   - Use "SELECT TOP 10" instead of "SELECT ... LIMIT 10"
-   - Use "SELECT TOP 10" instead of "OFFSET ... FETCH NEXT" syntax
-   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
-   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
-   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
-   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
-   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
-   - Use + for string concatenation instead of CONCAT()
-   - Use proper spacing around AS keyword for column aliases
-   
-   EXAMPLES:
-   ❌ WRONG: SELECT ... WHERE EXTRACT(YEAR FROM calday) = 2025
-   ✅ CORRECT: SELECT ... WHERE YEAR(calday) = 2025
-   
-   ❌ WRONG: SELECT ... ORDER BY column LIMIT 10;
-   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
-   
-   ❌ WRONG: SELECT ... ORDER BY column OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
-   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
-   
-   ❌ WRONG: SUM(revenue)AS total_revenue
-   ✅ CORRECT: SUM(revenue) AS total_revenue
-   
-3. Use correct column names as shown in schema:
-   - customer_id (NOT cliente_id)
-   - Nombre_cliente for customer names
-   - IngresoNetoSImpuestos for revenue
-4. Join tables properly using the relationships shown
-5. Use meaningful column aliases with proper AS keyword spacing
-6. Include appropriate WHERE clauses for business context
-
-TABLE RELATIONSHIPS:
-- dev.segmentacion (FACT) connects to:
-  - dev.cliente via customer_id
-  - dev.producto via material_id -> Material
-  - dev.tiempo via calday -> Fecha
-- dev.cliente_cedi bridges dev.cliente and dev.mercado
-- dev.mercado connects via CEDIid -> cedi_id
-
-BUSINESS CONTEXT:
-- Revenue metric: IngresoNetoSImpuestos (primary revenue field)
-- Customer identification: customer_id + Nombre_cliente
-- Product identification: Material + Producto
-- Time analysis: calday (transaction date)
-
-Generate a SQL Server query that:
-1. Accurately answers the user's question
-2. Uses proper SQL Server syntax (NO PostgreSQL/MySQL functions)
-3. Uses SELECT TOP instead of LIMIT or OFFSET...FETCH NEXT
-4. Uses proper column names from the schema
-5. Includes appropriate JOINs based on relationships
-6. Has proper spacing around AS keyword in column aliases
-7. Is optimized for performance
-8. Returns meaningful business results
-
-Return ONLY the SQL query without explanations or markdown formatting.
-"""
-        
-        response = await self._get_ai_response(sql_prompt, max_tokens=800, temperature=0.1)
-        return response
+        try:
+            # Create kernel arguments for the template
+            from semantic_kernel.functions import KernelArguments
+            
+            arguments = KernelArguments(
+                question=question,
+                schema_context=schema_context,
+                intent_analysis=intent_analysis
+            )
+            
+            # Invoke the SQL generation function
+            result = await self.kernel.invoke(
+                self.sql_generation_function,
+                arguments
+            )
+            
+            # Return the generated SQL
+            return str(result).strip()
+            
+        except Exception as e:
+            raise Exception(f"SQL generation failed: {str(e)}")
     
     def _clean_sql_query(self, sql_query: str) -> str:
         """

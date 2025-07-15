@@ -1,0 +1,30 @@
+Analyze the following business query results and provide a comprehensive summary:
+
+ORIGINAL QUESTION: {{ question }}
+
+SQL QUERY EXECUTED:
+{{ sql_query }}
+
+QUERY RESULTS:
+{{ formatted_results_analysis }}
+
+EXECUTION METADATA:
+- Execution Time: {{ metadata.get('execution_time', 'N/A') }} seconds
+- Rows Returned: {{ metadata.get('row_count', 'N/A') }}
+- Query Type: {{ metadata.get('query_type', 'N/A') }}
+
+Please provide:
+
+1. EXECUTIVE SUMMARY (2-3 sentences):
+   A high-level business summary that answers the user's question directly.
+
+2. DATA OVERVIEW:
+   Key statistics and patterns found in the data.
+
+3. TECHNICAL SUMMARY:
+   Brief technical details about the query execution and data quality.
+
+Format your response as:
+EXECUTIVE_SUMMARY: [your executive summary]
+DATA_OVERVIEW: [your data overview]
+TECHNICAL_SUMMARY: [your technical summary]
