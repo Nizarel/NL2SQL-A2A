@@ -5,7 +5,6 @@ from typing import Optional
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import BasePushNotificationSender, InMemoryPushNotificationConfigStore, InMemoryTaskStore
-from a2a.server.events.queue_manager import InMemoryQueueManager
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 from a2a_executors import OrchestratorAgentExecutor
@@ -25,11 +24,10 @@ class A2AServer:
     def _setup_server(self):
         """Setup the A2A server with the Orchestrator Agent"""
         try:
-            # Setup A2A components with proper error handling
+            # Setup A2A components for a2a-sdk 0.2.12
+            task_store = InMemoryTaskStore()
             config_store = InMemoryPushNotificationConfigStore()
             push_sender = BasePushNotificationSender(self.httpx_client, config_store)
-            task_store = InMemoryTaskStore()
-            queue_manager = InMemoryQueueManager()
             
             # Create agent executor with validation
             try:
@@ -41,7 +39,7 @@ class A2AServer:
             request_handler = DefaultRequestHandler(
                 agent_executor=agent_executor,
                 task_store=task_store,
-                queue_manager=queue_manager,
+                queue_manager=None,  # Defaults to InMemoryQueueManager
                 push_config_store=config_store,
                 push_sender=push_sender,
             )
@@ -64,8 +62,7 @@ class A2AServer:
             # Enhanced capabilities for NL2SQL workflow
             capabilities = AgentCapabilities(
                 streaming=True,
-                supportsTaskCancellation=False,  # Not implemented yet
-                supportsPushNotifications=True
+                pushNotifications=True
             )
 
             skill_orchestration = AgentSkill(
@@ -83,7 +80,7 @@ class A2AServer:
                     'Show the top performing distribution centers (CEDIs) by total sales in 2025',
                     "Generate a query to find customers who haven't made purchases in the last 6 months?",
                     'Which products have declining sales trends and in which regions in May 2025?',
-                    'Find the correlation between customer demographics and purchase patterns',
+                    'What are the top 5 products by sales in the last quarter?',
                 ],
             )
 

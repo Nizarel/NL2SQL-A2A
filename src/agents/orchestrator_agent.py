@@ -652,8 +652,10 @@ Each agent should complete their step and pass results to the next agent.
                 return
             
             # Final result
-            final_summary = summary_result["data"]["summary"]
-            insights = summary_result["data"].get("insights", [])
+            # final_summary = summary_result["data"]["summary"]
+            # insights = summary_result["data"].get("insights", [])
+            final_summary = summary_result["data"]["executive_summary"]
+            insights = summary_result["data"].get("key_insights", [])
             
             final_content = f"""✅ NL2SQL Workflow Complete!
 

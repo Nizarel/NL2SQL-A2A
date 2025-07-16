@@ -6,11 +6,16 @@ Run this to expose your NL2SQL Orchestrator Agent through A2A protocol
 import asyncio
 import httpx
 import uvicorn
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from a2a_server import A2AServer
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 # Global A2A server instance
@@ -32,12 +37,21 @@ async def lifespan(app: FastAPI):
         a2a_server_instance = A2AServer(
             httpx_client=httpx_client,
             host="localhost", 
-            port=8001  # Different port from main API
+            port=8002  # Use different port to avoid conflicts during testing
         )
         
         print("✅ A2A Server initialized successfully!")
         print(f"🔗 A2A Endpoint: http://localhost:8001/")
         print(f"📋 Agent Card: http://localhost:8001/agent-card")
+        
+        # Mount the A2A Starlette application
+        try:
+            starlette_app = a2a_server_instance.get_starlette_app()
+            app.mount("/a2a", starlette_app)
+            logger.info("✅ A2A Starlette application mounted successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to mount A2A application: {str(e)}")
+            raise
         
         yield
         
@@ -108,12 +122,25 @@ async def get_agent_card():
     if not a2a_server_instance:
         raise HTTPException(status_code=503, detail="A2A server not initialized")
     
-    return a2a_server_instance._get_agent_card().dict()
+    return a2a_server_instance._get_agent_card().model_dump()
 
 
-# Mount the A2A Starlette application
-if a2a_server_instance:
-    app.mount("/a2a", a2a_server_instance.get_starlette_app())
+# Create the app instance at module level
+app = FastAPI(
+    title="NL2SQL A2A Server",
+    description="Agent-to-Agent server for NL2SQL Multi-Agent Orchestrator",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 if __name__ == "__main__":
@@ -123,7 +150,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "start_a2a:app",
         host="0.0.0.0",
-        port=8001,
+        port=8002,
         reload=False,
         log_level="info"
     )
