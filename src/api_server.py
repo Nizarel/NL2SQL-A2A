@@ -22,6 +22,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from main import NL2SQLMultiAgentSystem
 
 
+def make_json_serializable(obj):
+    """
+    Convert objects to JSON serializable format
+    """
+    if hasattr(obj, '__dict__'):
+        # Convert objects with __dict__ to dictionary
+        return {key: make_json_serializable(value) for key, value in obj.__dict__.items()}
+    elif hasattr(obj, '_asdict'):
+        # Handle namedtuples
+        return make_json_serializable(obj._asdict())
+    elif isinstance(obj, dict):
+        # Recursively handle dictionaries
+        return {key: make_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        # Recursively handle lists and tuples
+        return [make_json_serializable(item) for item in obj]
+    elif hasattr(obj, 'data') and hasattr(obj, 'content'):
+        # Handle CallToolResult objects
+        return str(obj)
+    elif not isinstance(obj, (str, int, float, bool, type(None))):
+        # Convert other non-serializable objects to string
+        return str(obj)
+    else:
+        # Return serializable objects as-is
+        return obj
+
+
 # Pydantic Models for Request/Response
 class QueryRequest(BaseModel):
     """Request model for natural language queries"""
@@ -183,11 +210,30 @@ async def orchestrator_query(
         )
         
         if result.get("success"):
-            return APIResponse(
-                success=True,
-                data=result.get("data"),
-                metadata=result.get("metadata")
-            )
+            # Debug: Check data structure for serialization issues
+            try:
+                data = result.get("data")
+                metadata = result.get("metadata")
+                
+                # Convert any non-serializable objects to strings
+                if data:
+                    data = make_json_serializable(data)
+                if metadata:
+                    metadata = make_json_serializable(metadata)
+                
+                return APIResponse(
+                    success=True,
+                    data=data,
+                    metadata=metadata
+                )
+            except Exception as serialization_error:
+                print(f"❌ Serialization error: {serialization_error}")
+                # Fallback: return string representation
+                return APIResponse(
+                    success=True,
+                    data={"result": str(result.get("data"))},
+                    metadata={"original_metadata": str(result.get("metadata"))}
+                )
         else:
             raise HTTPException(
                 status_code=400,
@@ -196,6 +242,56 @@ async def orchestrator_query(
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Orchestrator query failed: {str(e)}")
+
+
+@app.post("/orchestrator/formatedresults", response_model=APIResponse)
+async def orchestrator_formatted_results(
+    request: QueryRequest,
+    system: NL2SQLMultiAgentSystem = Depends(get_system)
+):
+    """
+    Process natural language query and return only formatted results and summary
+    Excludes SQL query and raw results from the response
+    """
+    try:
+        print(f"📊 Orchestrator formatted results: {request.question}")
+        
+        result = await system.ask_question(
+            question=request.question,
+            execute=request.execute,
+            limit=request.limit,
+            include_summary=request.include_summary,
+            context=request.context
+        )
+        
+        if result.get("success"):
+            # Extract only formatted results and summary from the data
+            original_data = result.get("data", {})
+            filtered_data = {}
+            
+            # Include only formatted results and summary, exclude sql_query and results
+            if "formatted_results" in original_data:
+                filtered_data["formatted_results"] = make_json_serializable(original_data["formatted_results"])
+            if "summary" in original_data:
+                filtered_data["summary"] = make_json_serializable(original_data["summary"])
+            if "insights" in original_data:
+                filtered_data["insights"] = make_json_serializable(original_data["insights"])
+            if "recommendations" in original_data:
+                filtered_data["recommendations"] = make_json_serializable(original_data["recommendations"])
+            
+            return APIResponse(
+                success=True,
+                data=filtered_data,
+                metadata=make_json_serializable(result.get("metadata"))
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query processing failed: {result.get('error', 'Unknown error')}"
+            )
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Orchestrator formatted results failed: {str(e)}")
 
 
 @app.post("/orchestrator/query-async", response_model=APIResponse)

@@ -197,6 +197,49 @@ class SQLGeneratorAgent(BaseAgent):
         sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = sql_query.strip()
         
+        # Convert PostgreSQL/MySQL INTERVAL syntax to SQL Server DATEADD
+        # Pattern: INTERVAL 'n unit' or INTERVAL n unit
+        # Examples: INTERVAL '12 months', INTERVAL 1 YEAR, etc.
+        
+        # INTERVAL '12 months' -> DATEADD(MONTH, -12, GETDATE())
+        interval_patterns = [
+            # INTERVAL 'n months'
+            (r"INTERVAL\s+'(\d+)\s+months?'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
+            (r"INTERVAL\s+'(\d+)\s+MONTH'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
+            
+            # INTERVAL 'n days'
+            (r"INTERVAL\s+'(\d+)\s+days?'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
+            (r"INTERVAL\s+'(\d+)\s+DAY'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
+            
+            # INTERVAL 'n years'
+            (r"INTERVAL\s+'(\d+)\s+years?'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
+            (r"INTERVAL\s+'(\d+)\s+YEAR'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
+            
+            # INTERVAL n MONTH (without quotes)
+            (r"INTERVAL\s+(\d+)\s+MONTH", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
+            (r"INTERVAL\s+(\d+)\s+DAY", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
+            (r"INTERVAL\s+(\d+)\s+YEAR", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
+        ]
+        
+        for pattern, replacement in interval_patterns:
+            sql_query = re.sub(pattern, replacement, sql_query, flags=re.IGNORECASE)
+        
+        # Handle more complex INTERVAL expressions with arithmetic
+        # Example: GETDATE() - INTERVAL '12 months' -> DATEADD(MONTH, -12, GETDATE())
+        sql_query = re.sub(
+            r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+months?'",
+            lambda m: f"DATEADD(MONTH, -{m.group(2)}, {m.group(1)})",
+            sql_query,
+            flags=re.IGNORECASE
+        )
+        
+        sql_query = re.sub(
+            r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+days?'",
+            lambda m: f"DATEADD(DAY, -{m.group(2)}, {m.group(1)})",
+            sql_query,
+            flags=re.IGNORECASE
+        )
+        
         # Convert PostgreSQL/MySQL date functions to SQL Server format
         # EXTRACT(YEAR FROM date_col) -> YEAR(date_col)
         sql_query = re.sub(r'\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
@@ -212,6 +255,23 @@ class SQLGeneratorAgent(BaseAgent):
         
         # Convert CURRENT_DATE to CAST(GETDATE() AS DATE)
         sql_query = re.sub(r'\bCURRENT_DATE\b', 'CAST(GETDATE() AS DATE)', sql_query, flags=re.IGNORECASE)
+        
+        # Fix invalid date arithmetic patterns that might result from conversions
+        # Pattern: (CAST(GETDATE() AS DATE) - DATEADD(...)) -> just DATEADD(...)
+        sql_query = re.sub(
+            r'\(\s*CAST\s*\(\s*GETDATE\s*\(\s*\)\s*AS\s+DATE\s*\)\s*-\s*(DATEADD\([^)]+\))\s*\)',
+            r'\1',
+            sql_query,
+            flags=re.IGNORECASE
+        )
+        
+        # Also handle simpler cases without parentheses
+        sql_query = re.sub(
+            r'CAST\s*\(\s*GETDATE\s*\(\s*\)\s*AS\s+DATE\s*\)\s*-\s*(DATEADD\([^)]+\))',
+            r'\1',
+            sql_query,
+            flags=re.IGNORECASE
+        )
         
         # Convert CONCAT function (PostgreSQL) to + operator (SQL Server)
         sql_query = re.sub(r'\bCONCAT\s*\(([^)]+)\)', lambda m: m.group(1).replace(',', ' +'), sql_query, flags=re.IGNORECASE)
@@ -251,8 +311,8 @@ class SQLGeneratorAgent(BaseAgent):
             limit_value = limit_match.group(1)
             # Remove the LIMIT clause completely
             sql_query = re.sub(limit_pattern_end, '', sql_query, flags=re.IGNORECASE).strip()
-            # Add TOP after SELECT (handle multiple SELECT statements by targeting the first one)
-            sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+            sql_query = self._add_top_clause_to_query(sql_query, limit_value)
+                
         elif re.search(limit_pattern_mid, sql_query, re.IGNORECASE):
             # Handle LIMIT in middle of query
             match = re.search(limit_pattern_mid, sql_query, re.IGNORECASE)
@@ -260,8 +320,7 @@ class SQLGeneratorAgent(BaseAgent):
                 limit_value = match.group(1)
                 # Remove the LIMIT clause
                 sql_query = re.sub(limit_pattern_mid, '', sql_query, flags=re.IGNORECASE).strip()
-                # Add TOP after SELECT
-                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+                sql_query = self._add_top_clause_to_query(sql_query, limit_value)
         
         # Fix potential issues with column aliases and AS keyword
         # Ensure proper spacing around AS keyword
@@ -337,3 +396,42 @@ class SQLGeneratorAgent(BaseAgent):
             return "DELETE"
         else:
             return "UNKNOWN"
+    
+    def _add_top_clause_to_query(self, sql_query: str, limit_value: str) -> str:
+        """
+        Add TOP clause to the appropriate SELECT statement in a query.
+        Handles both simple SELECT queries and CTE queries correctly.
+        """
+        if sql_query.upper().startswith('WITH'):
+            # For CTE queries, find the final SELECT statement (not inside CTEs)
+            lines = sql_query.split('\n')
+            final_select_line_idx = -1
+            
+            # Find the last SELECT that's at the root level (not in a CTE definition)
+            # Work backwards to find the final SELECT
+            for i in reversed(range(len(lines))):
+                line_stripped = lines[i].strip().upper()
+                if line_stripped.startswith('SELECT'):
+                    # Check if this is at the root level by counting parentheses
+                    # from the start of the query to this line
+                    paren_count = 0
+                    for j in range(i + 1):
+                        paren_count += lines[j].count('(') - lines[j].count(')')
+                    
+                    # If parentheses are balanced (0) or negative, it's the final SELECT
+                    if paren_count <= 0:
+                        final_select_line_idx = i
+                        break
+            
+            if final_select_line_idx >= 0:
+                # Replace the final SELECT with SELECT TOP n
+                original_line = lines[final_select_line_idx]
+                modified_line = re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', original_line, count=1, flags=re.IGNORECASE)
+                lines[final_select_line_idx] = modified_line
+                return '\n'.join(lines)
+            else:
+                print("⚠️ Warning: Could not find final SELECT in CTE query to add TOP clause")
+                return sql_query
+        else:
+            # For simple SELECT queries, add TOP after the first SELECT
+            return re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)

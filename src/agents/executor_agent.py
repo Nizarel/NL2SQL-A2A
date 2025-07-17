@@ -4,6 +4,7 @@ Executor Agent - Executes SQL queries and handles database operations
 
 import time
 import os
+import re
 from typing import Dict, Any
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
@@ -133,12 +134,29 @@ class ExecutorAgent(BaseAgent):
                         "query_type": "DANGEROUS"
                     }
             
-            # Ensure it's a SELECT query
-            if not sql_upper.startswith('SELECT'):
+            # Ensure it's a SELECT query (including CTEs that start with WITH)
+            if not (sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')):
                 return {
                     "is_valid": False,
                     "error": "Only SELECT queries are allowed",
                     "query_type": "NON_SELECT"
+                }
+            
+            # If it starts with WITH, ensure it contains SELECT (CTE validation)
+            if sql_upper.startswith('WITH') and 'SELECT' not in sql_upper:
+                return {
+                    "is_valid": False,
+                    "error": "WITH queries must contain SELECT statements",
+                    "query_type": "INVALID_CTE"
+                }
+            
+            # Check for SQL Server syntax issues
+            syntax_issues = self._check_sql_server_syntax(sql_query)
+            if syntax_issues:
+                return {
+                    "is_valid": False,
+                    "error": f"SQL Server syntax issues detected: {', '.join(syntax_issues)}",
+                    "query_type": "SYNTAX_ERROR"
                 }
             
             # Check for required dev. prefix
@@ -161,6 +179,67 @@ class ExecutorAgent(BaseAgent):
                 "error": f"Validation error: {str(e)}",
                 "query_type": "VALIDATION_ERROR"
             }
+    
+    def _check_sql_server_syntax(self, sql_query: str) -> list:
+        """
+        Check for common SQL Server syntax issues and return list of problems
+        """
+        issues = []
+        sql_lower = sql_query.lower()
+        
+        # Check for PostgreSQL/MySQL INTERVAL syntax
+        if 'interval ' in sql_lower and ('month' in sql_lower or 'day' in sql_lower or 'year' in sql_lower):
+            issues.append("Use DATEADD() instead of INTERVAL for date arithmetic in SQL Server")
+        
+        # Check for malformed CTE structure - improved logic
+        # Check if query appears to be a broken CTE (starts with SELECT but has CTE-like structure)
+        if (sql_query.upper().startswith('SELECT') and 
+            ('AS (' in sql_query or 'AS(' in sql_query) and 
+            ',' in sql_query and 
+            'FROM' in sql_query.upper()):
+            
+            # Count the CTEs (looking for patterns like "name AS (")  
+            cte_pattern = r'\w+\s+AS\s*\('
+            cte_matches = re.findall(cte_pattern, sql_query, re.IGNORECASE)
+            
+            if len(cte_matches) >= 1:
+                issues.append("Query appears to be a malformed CTE - queries with CTEs must start with 'WITH' clause")
+        
+        # Check for common PostgreSQL functions not available in SQL Server
+        postgresql_functions = ['extract(', 'date_trunc(', 'generate_series(']
+        for func in postgresql_functions:
+            if func in sql_lower:
+                issues.append(f"Function '{func}' is not available in SQL Server")
+        
+        # Check for proper CTE syntax if WITH is present
+        if sql_query.upper().startswith('WITH'):
+            # Basic validation: ensure there's at least one SELECT in the query
+            if 'SELECT' not in sql_query.upper():
+                issues.append("CTE query missing SELECT statement")
+            
+            # Check for proper CTE structure: should have final SELECT after all CTEs
+            # Look for the pattern where the last SELECT is not inside parentheses
+            lines = [line.strip() for line in sql_query.split('\n') if line.strip()]
+            
+            # Find the last SELECT statement that's not inside a CTE definition
+            final_select_found = False
+            inside_cte = False
+            paren_count = 0
+            
+            for line in lines:
+                line_upper = line.upper()
+                
+                # Count parentheses to track if we're inside a CTE definition
+                paren_count += line.count('(') - line.count(')')
+                
+                # If we find a SELECT and we're not inside parentheses, it's likely the final SELECT
+                if 'SELECT' in line_upper and paren_count <= 0:
+                    final_select_found = True
+            
+            if not final_select_found:
+                issues.append("CTE query appears to be missing final SELECT statement")
+        
+        return issues
     
     async def _execute_query(self, sql_query: str, limit: int, timeout: int) -> Dict[str, Any]:
         """
@@ -199,6 +278,18 @@ class ExecutorAgent(BaseAgent):
             
         except Exception as e:
             execution_time = time.time() - start_time
+            error_message = str(e)
+            
+            # Provide more helpful error messages for common SQL Server issues
+            if "Incorrect syntax near '12 months'" in error_message:
+                error_message = "SQL Server syntax error: Use DATEADD(MONTH, -12, GETDATE()) instead of INTERVAL '12 months'"
+            elif "Incorrect syntax near 'interval'" in error_message.lower():
+                error_message = "SQL Server syntax error: INTERVAL is not supported. Use DATEADD() for date arithmetic"
+            elif "Invalid object name" in error_message and "dev." not in error_message:
+                error_message = f"Table not found: Ensure table names use 'dev.' schema prefix. Original error: {error_message}"
+            elif "Incorrect syntax" in error_message:
+                error_message = f"SQL syntax error: {error_message}. Check for SQL Server compatibility issues"
+            
             return {
                 "success": False,
                 "results": None,
@@ -206,7 +297,7 @@ class ExecutorAgent(BaseAgent):
                 "execution_time": round(execution_time, 3),
                 "row_count": 0,
                 "columns": [],
-                "error": f"Database execution error: {str(e)}"
+                "error": f"Database execution error: {error_message}"
             }
     
     def _format_query_results(self, raw_result: str) -> Dict[str, Any]:
@@ -317,7 +408,14 @@ class ExecutorAgent(BaseAgent):
         """
         sql_upper = sql_query.upper()
         
-        if 'GROUP BY' in sql_upper:
+        if sql_upper.startswith('WITH'):
+            if 'GROUP BY' in sql_upper:
+                return "CTE_AGGREGATION"
+            elif 'JOIN' in sql_upper:
+                return "CTE_JOIN_QUERY"
+            else:
+                return "CTE_SELECT"
+        elif 'GROUP BY' in sql_upper:
             return "AGGREGATION"
         elif 'JOIN' in sql_upper:
             return "JOIN_QUERY"

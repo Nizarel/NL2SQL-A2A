@@ -1,5 +1,5 @@
 # Core NL2SQL Dependencies
-semantic-kernel==1.34.0
+semantic-kernel==1.35.0
 fastmcp
 fasta2a
 python-dotenv
@@ -8,8 +8,8 @@ httpx
 pydantic
 
 # FastAPI and server dependencies
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+fastapi>=0.116.1
+uvicorn[standard]>=0.35.0
 
 # Optional: for development and testing
 pytest
