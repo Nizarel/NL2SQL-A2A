@@ -670,13 +670,20 @@ Each agent should complete their step and pass results to the next agent.
 📊 **Results:** {row_count} rows retrieved
 
 💡 **Key Insights:**
-{chr(10).join(f"• {insight}" for insight in insights[:5])}
+{chr(10).join(f"• {insight.get('finding', insight) if isinstance(insight, dict) else insight}" for insight in insights[:3])}
 """
             
             yield {
                 'content': final_content,
                 'require_user_input': False,
-                'is_task_complete': True
+                'is_task_complete': True,
+                # Include raw structured data for A2A executor formatting
+                'raw_data': {
+                    'summary_result': summary_result,
+                    'sql_query': sql_query,
+                    'execution_result': execution_result,
+                    'row_count': row_count
+                }
             }
             
         except Exception as e:

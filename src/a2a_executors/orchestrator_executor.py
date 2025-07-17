@@ -107,6 +107,11 @@ class OrchestratorAgentExecutor(AgentExecutor):
                 content = update.get('content', '')
                 is_complete = update.get('is_task_complete', False)
                 require_input = update.get('require_user_input', False)
+                raw_data = update.get('raw_data', None)
+                
+                # For A2A final result, use raw data to create better formatting
+                if is_complete and raw_data:
+                    content = self._format_a2a_final_result(raw_data)
                 
                 if content:
                     # Determine the appropriate task state based on the update
@@ -297,3 +302,71 @@ orchestrator_executor.set_orchestrator(orchestrator)
         #     await self.orchestrator.cancel()
         
         logger.info("Task cancellation completed")
+
+    def _format_a2a_final_result(self, raw_data: dict) -> str:
+        """Format the final result specifically for A2A protocol with proper insight handling"""
+        
+        try:
+            summary_result = raw_data.get('summary_result', {})
+            sql_query = raw_data.get('sql_query', '')
+            execution_result = raw_data.get('execution_result', {})
+            row_count = raw_data.get('row_count', 0)
+            
+            # Extract structured data from summary result
+            summary_data = summary_result.get('data', {})
+            executive_summary = summary_data.get('executive_summary', 'No summary available')
+            key_insights = summary_data.get('key_insights', [])
+            recommendations = summary_data.get('recommendations', [])
+            data_overview = summary_data.get('data_overview', '')
+            
+            # Format insights properly for A2A
+            formatted_insights = []
+            for insight in key_insights[:3]:  # Top 3 insights
+                if isinstance(insight, dict):
+                    finding = insight.get('finding', '')
+                    significance = insight.get('business_significance', '')
+                    if finding:
+                        formatted_insights.append(f"• **{finding}** - {significance}")
+                else:
+                    formatted_insights.append(f"• {insight}")
+            
+            # Format recommendations for A2A  
+            formatted_recommendations = []
+            for rec in recommendations[:2]:  # Top 2 recommendations
+                if isinstance(rec, dict):
+                    action = rec.get('action', '')
+                    priority = rec.get('priority', 'Medium')
+                    if action:
+                        formatted_recommendations.append(f"• **[{priority}]** {action}")
+                else:
+                    formatted_recommendations.append(f"• {rec}")
+            
+            # Create A2A-optimized final content
+            final_content = f"""✅ NL2SQL Workflow Complete!
+
+📋 **Executive Summary:**
+{executive_summary}
+
+🔍 **SQL Query:**
+```sql
+{sql_query}
+```
+
+📊 **Results:** {row_count} rows retrieved
+
+📈 **Data Overview:**
+{data_overview}
+
+💡 **Key Business Insights:**
+{chr(10).join(formatted_insights) if formatted_insights else "• No specific insights available"}
+
+🎯 **Strategic Recommendations:**
+{chr(10).join(formatted_recommendations) if formatted_recommendations else "• No specific recommendations available"}
+"""
+            
+            return final_content
+            
+        except Exception as e:
+            logger.error(f"A2A formatting failed: {str(e)}")
+            # Fallback to original content
+            return raw_data.get('content', f'❌ Formatting error: {str(e)}')
