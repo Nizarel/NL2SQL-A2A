@@ -3,8 +3,7 @@ Schema Service for NL2SQL Agent
 Manages database schema context and provides schema information for SQL generation
 """
 
-from typing import Dict, List, Any, Optional
-import json
+from typing import Dict, List, Any
 import re
 
 
@@ -130,6 +129,164 @@ class SchemaService:
         }
     
     
+    def identify_relevant_tables(self, question: str, context: str = "") -> List[str]:
+        """Identify tables relevant to the question using intelligent keyword matching"""
+        question_lower = question.lower()
+        context_lower = context.lower()
+        combined_text = f"{question_lower} {context_lower}"
+        
+        # Enhanced table keyword mapping
+        table_keywords = {
+            "cliente": [
+                "customer", "client", "cliente", "customer_id", "nombre", "account", "buyer",
+                "commercial", "territory", "location", "address", "phone", "billing"
+            ],
+            "producto": [
+                "product", "producto", "material", "category", "brand", "item", "sku",
+                "packaging", "flavor", "content", "bottle", "package", "marca"
+            ],
+            "segmentacion": [
+                "sales", "revenue", "volume", "transaction", "ventas", "income", "money",
+                "units", "bottles", "performance", "kpi", "metric", "sold", "purchase"
+            ],
+            "tiempo": [
+                "date", "time", "month", "year", "quarter", "fecha", "period", "when",
+                "temporal", "calendar", "weekly", "daily", "annual", "seasonal"
+            ],
+            "mercado": [
+                "market", "territory", "region", "cedi", "territorio", "zone", "area",
+                "distribution", "geographic", "location", "local", "foraneo"
+            ],
+            "cliente_cedi": [
+                "distribution", "territory", "region", "mapping", "assignment",
+                "channel", "coverage", "local", "foraneo"
+            ]
+        }
+        
+        relevant_tables = []
+        table_scores = {}
+        
+        # Score tables based on keyword matches
+        for table, keywords in table_keywords.items():
+            score = sum(1 for keyword in keywords if keyword in combined_text)
+            if score > 0:
+                table_scores[table] = score
+                relevant_tables.append(table)
+        
+        # Always include core fact table if doing analytical queries
+        if any(word in combined_text for word in ["sales", "revenue", "performance", "total", "sum"]):
+            if "segmentacion" not in relevant_tables:
+                relevant_tables.append("segmentacion")
+        
+        # Sort by relevance score and limit to top 4
+        if table_scores:
+            relevant_tables.sort(key=lambda t: table_scores.get(t, 0), reverse=True)
+        
+        return relevant_tables[:4] if relevant_tables else ["cliente", "segmentacion", "producto"]
+    
+    def identify_key_metrics(self, question: str) -> List[str]:
+        """Identify key metrics mentioned in the question"""
+        question_lower = question.lower()
+        
+        # Metric mapping from question terms to database columns
+        metric_mapping = {
+            "revenue": ["IngresoNetoSImpuestos", "net_revenue"],
+            "income": ["IngresoNetoSImpuestos", "net_revenue"],
+            "sales": ["VentasCajasUnidad", "VentasCajasOriginales"],
+            "volume": ["VentasCajasUnidad", "bottles_sold_m"],
+            "units": ["VentasCajasUnidad"],
+            "bottles": ["bottles_sold_m"],
+            "coverage": ["Cobertura"],
+            "customers": ["customer_id"],
+            "transactions": ["customer_id", "material_id", "calday"]
+        }
+        
+        detected_metrics = []
+        for concept, metrics in metric_mapping.items():
+            if concept in question_lower:
+                detected_metrics.extend(metrics)
+        
+        # If no specific metrics detected, include common ones
+        if not detected_metrics:
+            detected_metrics = ["IngresoNetoSImpuestos", "VentasCajasUnidad"]
+        
+        return list(set(detected_metrics))
+    
+    def extract_business_context(self, question: str) -> Dict[str, Any]:
+        """Extract business context relevant to the question"""
+        question_lower = question.lower()
+        
+        # Classify query intent
+        query_type = "general"
+        if any(word in question_lower for word in ["top", "best", "highest", "maximum", "most"]):
+            query_type = "ranking"
+        elif any(word in question_lower for word in ["sum", "total", "aggregate", "count"]):
+            query_type = "aggregation"
+        elif any(word in question_lower for word in ["compare", "vs", "versus", "difference"]):
+            query_type = "comparison"
+        elif any(word in question_lower for word in ["trend", "over time", "growth", "change"]):
+            query_type = "temporal_analysis"
+        
+        # Identify business domain
+        domain_context = {
+            "industry": "Beverage/FMCG Retail Analytics",
+            "business_model": "Distribution-based sales through CEDI centers",
+            "key_metrics": ["Revenue", "Volume", "Customer Coverage", "Territory Performance"],
+            "query_type": query_type,
+            "temporal_scope": self._detect_temporal_scope(question),
+            "geographic_scope": self._detect_geographic_scope(question),
+            "product_scope": self._detect_product_scope(question)
+        }
+        
+        return domain_context
+    
+    def _detect_temporal_scope(self, question: str) -> str:
+        """Detect temporal scope of the question"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ["daily", "day", "today"]):
+            return "daily"
+        elif any(word in question_lower for word in ["weekly", "week"]):
+            return "weekly"
+        elif any(word in question_lower for word in ["monthly", "month"]):
+            return "monthly"
+        elif any(word in question_lower for word in ["quarterly", "quarter", "q1", "q2", "q3", "q4"]):
+            return "quarterly"
+        elif any(word in question_lower for word in ["yearly", "annual", "year"]):
+            return "yearly"
+        else:
+            return "unspecified"
+    
+    def _detect_geographic_scope(self, question: str) -> str:
+        """Detect geographic scope of the question"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ["territory", "territorio"]):
+            return "territory"
+        elif any(word in question_lower for word in ["region", "zona"]):
+            return "region"
+        elif any(word in question_lower for word in ["cedi", "distribution"]):
+            return "distribution_center"
+        elif any(word in question_lower for word in ["local", "foraneo"]):
+            return "local_vs_external"
+        else:
+            return "all_markets"
+    
+    def _detect_product_scope(self, question: str) -> str:
+        """Detect product scope of the question"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ["category", "categoria"]):
+            return "category"
+        elif any(word in question_lower for word in ["brand", "marca"]):
+            return "brand"
+        elif any(word in question_lower for word in ["product", "producto", "material"]):
+            return "product"
+        elif any(word in question_lower for word in ["flavor", "sabor"]):
+            return "flavor"
+        else:
+            return "all_products"
+
     def get_schema_for_query(self, tables_mentioned: List[str]) -> str:
         """
         Get relevant schema information for specific tables mentioned in a query

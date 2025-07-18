@@ -10,11 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asyncio
 from dotenv import load_dotenv
 from semantic_kernel import Kernel
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion, AzureTextEmbedding
 
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 from services.schema_service import SchemaService
 from agents import SQLGeneratorAgent, ExecutorAgent, SummarizingAgent, OrchestratorAgent
+from agents.schema_analyst_agent import SchemaAnalystAgent
 
 
 class NL2SQLMultiAgentSystem:
@@ -45,6 +46,7 @@ class NL2SQLMultiAgentSystem:
         self.sql_generator_agent = None
         self.executor_agent = None
         self.summarizing_agent = None
+        self.schema_analyst_agent = None
         self.orchestrator_agent = None
         
     async def initialize(self):
@@ -88,6 +90,14 @@ class NL2SQLMultiAgentSystem:
             self.summarizing_agent = SummarizingAgent(self.kernel)
             print("✅ Summarizing Agent initialized")
             
+            # Schema Analyst Agent (NEW)
+            self.schema_analyst_agent = SchemaAnalystAgent(
+                self.kernel, 
+                self.schema_service, 
+                embedding_service=self.embedding_service
+            )
+            print("✅ Schema Analyst Agent initialized")
+            
             # Orchestrator Agent
             self.orchestrator_agent = OrchestratorAgent(
                 self.kernel, 
@@ -119,6 +129,7 @@ class NL2SQLMultiAgentSystem:
             print(f"   Deployment: {azure_deployment}")
             print(f"   API Version: {azure_api_version}")
             
+            # Add chat completion service
             ai_service = AzureChatCompletion(
                 deployment_name=azure_deployment,
                 endpoint=azure_endpoint,
@@ -127,6 +138,23 @@ class NL2SQLMultiAgentSystem:
                 service_id="azure_openai"
             )
             self.kernel.add_service(ai_service)
+            
+            # Add embedding service if configured
+            azure_embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+            if azure_embedding_deployment:
+                print(f"🔧 Setting up Azure OpenAI embedding service...")
+                print(f"   Embedding Deployment: {azure_embedding_deployment}")
+                
+                embedding_service = AzureTextEmbedding(
+                    deployment_name=azure_embedding_deployment,
+                    endpoint=azure_endpoint,
+                    api_key=azure_api_key,
+                    api_version=azure_api_version,
+                    service_id="azure_openai_embedding"
+                )
+                self.kernel.add_service(embedding_service)
+                print("✅ Azure OpenAI embedding service configured")
+            
             print("✅ Azure OpenAI service configured")
             return
         
