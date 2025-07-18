@@ -1,16 +1,21 @@
 """
 Schema Service for NL2SQL Agent
 Manages database schema context and provides schema information for SQL generation
+Enhanced with caching and targeted schema retrieval for better performance
 """
 
-from typing import Dict, List, Any, Optional
-import json
+import asyncio
 import re
+import json
+from typing import Dict, List, Any, Optional, Set
+from datetime import datetime, timedelta
+from config import get_settings
 
 
 class SchemaService:
     """
     Service that manages database schema context for SQL generation
+    Enhanced with caching, targeted schema retrieval, and performance optimizations
     """
     
     def __init__(self, mcp_plugin):
@@ -18,35 +23,82 @@ class SchemaService:
         self.schema_context = {}
         self.tables_info = {}
         self.relationships = {}
+        
+        # Enhanced caching
+        self._schema_cache = {}
+        self._cache_timestamp = None
+        settings = get_settings()
+        self._cache_ttl = timedelta(seconds=settings.schema_cache_ttl)
+        self._schema_lock = asyncio.Lock()
+        self._table_relevance_cache = {}
+        
+        # Table keywords mapping for intelligent filtering
+        self._table_keywords = {
+            'cliente': ['customer', 'cliente', 'client', 'user', 'account'],
+            'producto': ['product', 'producto', 'item', 'inventory', 'catalog'],
+            'segmentacion': ['sales', 'revenue', 'ventas', 'ingreso', 'profit', 'performance'],
+            'tiempo': ['date', 'time', 'month', 'year', 'fecha', 'tiempo', 'period', 'when'],
+            'mercado': ['market', 'territory', 'mercado', 'region', 'geography', 'location'],
+            'cliente_cedi': ['distribution', 'cedi', 'warehouse', 'center', 'location']
+        }
     
     async def initialize_schema_context(self) -> Dict[str, Any]:
         """
         Initialize schema context by gathering all table information
+        Uses caching to avoid repeated database calls
         """
-        async with self.mcp_plugin:
-            # Get list of tables
-            tables_result = await self.mcp_plugin._list_tables_raw()
-            print(f"Tables found: {tables_result}")
+        async with self._schema_lock:
+            # Check if cache is still valid
+            if self._is_cache_valid():
+                print("📦 Using cached schema context")
+                return self.schema_context
             
-            # Parse table names
-            table_names = self._parse_table_names(tables_result)
+            print("🔄 Refreshing schema context from database...")
             
-            # Get schema for each table
-            for table_name in table_names:
-                print(f"Getting schema for table: {table_name}")
-                schema_info = await self.mcp_plugin._describe_table_raw(table_name)
-                self.tables_info[table_name] = schema_info
-            
-            # Build schema context
-            self.schema_context = {
-                "database_name": "Business Analytics Database",
-                "schema_name": "dev",
-                "tables": self.tables_info,
-                "relationships": self._build_relationships(),
-                "business_context": self._get_business_context()
-            }
+            async with self.mcp_plugin:
+                # Get list of tables
+                tables_result = await self.mcp_plugin._list_tables_raw()
+                print(f"Tables found: {tables_result}")
+                
+                # Parse table names
+                table_names = self._parse_table_names(tables_result)
+                
+                # Get schema for each table in parallel
+                schema_tasks = []
+                for table_name in table_names:
+                    schema_tasks.append(self._get_table_schema(table_name))
+                
+                # Wait for all schema fetches to complete
+                schema_results = await asyncio.gather(*schema_tasks, return_exceptions=True)
+                
+                # Process results
+                for table_name, schema_result in zip(table_names, schema_results):
+                    if isinstance(schema_result, Exception):
+                        print(f"⚠️ Error getting schema for {table_name}: {schema_result}")
+                        continue
+                    self.tables_info[table_name] = schema_result
+                    self._schema_cache[table_name] = self._format_table_schema(schema_result)
+                
+                # Build schema context
+                self.schema_context = {
+                    "database_name": "Business Analytics Database",
+                    "schema_name": "dev",
+                    "tables": self.tables_info,
+                    "relationships": self._build_relationships(),
+                    "business_context": self._get_business_context()
+                }
+                
+                # Update cache timestamp
+                self._cache_timestamp = datetime.now()
         
         return self.schema_context
+    
+    async def _get_table_schema(self, table_name: str) -> Dict[str, Any]:
+        """
+        Get schema for a single table
+        """
+        print(f"Getting schema for table: {table_name}")
+        return await self.mcp_plugin._describe_table_raw(table_name)
     
     def _parse_table_names(self, tables_result: str) -> List[str]:
         """Parse table names from the MCP result"""
@@ -246,3 +298,138 @@ class SchemaService:
         summary.append("- Date filtering should use calday field in segmentacion")
         
         return "\n".join(summary)
+    
+    async def get_relevant_tables(self, question: str) -> Set[str]:
+        """
+        Get relevant tables based on question keywords with caching
+        Analyzes the question to determine which tables are likely needed
+        """
+        # Check cache first
+        cache_key = question.lower().strip()
+        if cache_key in self._table_relevance_cache:
+            return self._table_relevance_cache[cache_key]
+        
+        relevant_tables = set()
+        question_lower = question.lower()
+        
+        # Analyze question for table relevance
+        for table, keywords in self._table_keywords.items():
+            if any(keyword in question_lower for keyword in keywords):
+                relevant_tables.add(table)
+        
+        # Add relationship-based tables
+        if 'cliente' in relevant_tables and ('sales' in question_lower or 'revenue' in question_lower):
+            relevant_tables.add('segmentacion')
+        
+        if 'segmentacion' in relevant_tables:
+            relevant_tables.add('cliente')  # Almost always need customer data with sales
+            if 'product' in question_lower or 'material' in question_lower:
+                relevant_tables.add('producto')
+        
+        # If no specific tables found, include core tables for general queries
+        if not relevant_tables:
+            if any(word in question_lower for word in ['show', 'list', 'get', 'find', 'select']):
+                relevant_tables = {'cliente', 'segmentacion', 'producto'}
+            else:
+                relevant_tables = {'cliente', 'segmentacion'}  # Default minimum set
+        
+        # Always ensure we have at least one table
+        if not relevant_tables:
+            relevant_tables = {'cliente'}
+        
+        # Cache the result
+        self._table_relevance_cache[cache_key] = relevant_tables
+        return relevant_tables
+    
+    async def get_targeted_schema_context(self, question: str) -> str:
+        """
+        Get only relevant schema based on the question
+        This reduces context size and improves AI processing speed
+        """
+        async with self._schema_lock:
+            # Ensure cache is valid
+            if not self._is_cache_valid():
+                await self.initialize_schema_context()
+            
+            # Get relevant tables
+            relevant_tables = await self.get_relevant_tables(question)
+            
+            # Build targeted schema context
+            return self._build_schema_context(relevant_tables)
+    
+    def _build_schema_context(self, tables: Set[str]) -> str:
+        """
+        Build schema context for specific tables
+        """
+        context_parts = []
+        context_parts.append("=== RELEVANT DATABASE SCHEMA ===")
+        context_parts.append("Schema: dev")
+        context_parts.append("")
+        
+        for table in sorted(tables):  # Sort for consistent ordering
+            if table in self._schema_cache:
+                context_parts.append(f"TABLE: dev.{table}")
+                context_parts.append(self._schema_cache[table])
+                context_parts.append("")
+        
+        # Add relevant relationships
+        if len(tables) > 1:
+            context_parts.append("RELATIONSHIPS:")
+            for table in tables:
+                if table in self.relationships:
+                    for rel in self.relationships[table]:
+                        if rel["table"] in tables:
+                            context_parts.append(f"- {table}.{rel['key']} -> {rel['table']}.{rel['foreign_key']}")
+            context_parts.append("")
+        
+        return "\n".join(context_parts)
+    
+    def _format_table_schema(self, schema_info: Dict[str, Any]) -> str:
+        """
+        Format table schema information for caching
+        """
+        if isinstance(schema_info, str):
+            return schema_info
+        
+        formatted = []
+        if isinstance(schema_info, dict) and 'columns' in schema_info:
+            for col in schema_info['columns']:
+                col_name = col.get('name', 'unknown')
+                col_type = col.get('type', 'unknown')
+                is_key = col.get('is_primary_key', False)
+                key_info = " (PRIMARY KEY)" if is_key else ""
+                formatted.append(f"- {col_name} ({col_type}){key_info}")
+        else:
+            formatted.append(str(schema_info))
+        
+        return "\n".join(formatted)
+    
+    def _is_cache_valid(self) -> bool:
+        """
+        Check if schema cache is still valid based on TTL
+        """
+        if not self._cache_timestamp:
+            return False
+        return datetime.now() - self._cache_timestamp < self._cache_ttl
+    
+    async def invalidate_cache(self):
+        """
+        Force invalidation of schema cache
+        """
+        async with self._schema_lock:
+            self._schema_cache.clear()
+            self._table_relevance_cache.clear()
+            self._cache_timestamp = None
+            print("🔄 Schema cache invalidated")
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get schema cache statistics
+        """
+        return {
+            "cache_size": len(self._schema_cache),
+            "relevance_cache_size": len(self._table_relevance_cache),
+            "is_valid": self._is_cache_valid(),
+            "cache_age_seconds": (datetime.now() - self._cache_timestamp).total_seconds() if self._cache_timestamp else None,
+            "ttl_seconds": self._cache_ttl.total_seconds()
+        }

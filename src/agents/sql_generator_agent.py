@@ -1,5 +1,6 @@
 """
 SQL Generator Agent - Analyzes user intent and generates SQL queries
+Enhanced with simple query detection for faster processing
 """
 
 import re
@@ -12,6 +13,19 @@ from semantic_kernel.functions import KernelFunctionFromPrompt
 
 from agents.base_agent import BaseAgent
 from services.schema_service import SchemaService
+from config import get_settings
+
+import re
+import os
+from typing import Dict, Any
+from semantic_kernel import Kernel
+from semantic_kernel.prompt_template import PromptTemplateConfig
+from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
+from semantic_kernel.functions import KernelFunctionFromPrompt
+
+from agents.base_agent import BaseAgent
+from services.schema_service import SchemaService
+from config import get_settings
 
 
 class SQLGeneratorAgent(BaseAgent):
@@ -22,6 +36,7 @@ class SQLGeneratorAgent(BaseAgent):
     def __init__(self, kernel: Kernel, schema_service: SchemaService):
         super().__init__(kernel, "SQLGeneratorAgent")
         self.schema_service = schema_service
+        self.settings = get_settings()
         self._setup_templates()
         
     def _setup_templates(self):
@@ -47,15 +62,15 @@ class SQLGeneratorAgent(BaseAgent):
         except Exception as e:
             raise Exception(f"Error loading template files: {e}")
         
-        # Create prompt template configs
+        # Create prompt template configs with optimized settings
         intent_config = PromptTemplateConfig(
             template=intent_template_content,
             name="intent_analysis",
             template_format="jinja2",
             execution_settings={
                 "default": PromptExecutionSettings(
-                    max_tokens=500,
-                    temperature=0.1
+                    max_tokens=self.settings.max_tokens_intent,
+                    temperature=self.settings.temperature
                 )
             }
         )
@@ -66,8 +81,8 @@ class SQLGeneratorAgent(BaseAgent):
             template_format="jinja2",
             execution_settings={
                 "default": PromptExecutionSettings(
-                    max_tokens=800,
-                    temperature=0.1
+                    max_tokens=self.settings.max_tokens_sql,
+                    temperature=self.settings.temperature
                 )
             }
         )
@@ -86,14 +101,7 @@ class SQLGeneratorAgent(BaseAgent):
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process user question and generate SQL query
-        
-        Args:
-            input_data: Dictionary containing:
-                - question: User's natural language question
-                - context: Optional additional context
-                
-        Returns:
-            Dictionary containing generated SQL query and metadata
+        Enhanced with simple query detection and targeted schema context
         """
         try:
             question = input_data.get("question", "")
@@ -105,16 +113,43 @@ class SQLGeneratorAgent(BaseAgent):
                     error="No question provided"
                 )
             
-            # Get schema context
-            schema_context = self.schema_service.get_full_schema_summary()
+            # Get targeted schema context (only relevant tables)
+            schema_context = await self.schema_service.get_targeted_schema_context(question)
             
-            # Analyze user intent
-            intent_analysis = await self._analyze_intent(question, context)
-            
-            # Generate SQL query
-            sql_query = await self._generate_sql(question, schema_context, intent_analysis)
+            # Skip intent analysis for simple queries to improve speed
+            if self._is_simple_query(question):
+                # Direct SQL generation for simple queries
+                sql_query = await self._generate_sql_simple(question, schema_context)
+            else:
+                # Full intent analysis for complex queries
+                intent_analysis = await self._analyze_intent(question, context)
+                sql_query = await self._generate_sql(question, schema_context, intent_analysis)
             
             # Clean and validate SQL
+            cleaned_sql = self._clean_sql_query(sql_query)
+            
+            # Apply limit if not present
+            if input_data.get("limit") and "TOP" not in cleaned_sql.upper():
+                cleaned_sql = self._add_top_clause_to_query(cleaned_sql, str(input_data["limit"]))
+            
+            return self._create_result(
+                success=True,
+                data={
+                    "sql_query": cleaned_sql,
+                    "question": question
+                },
+                metadata={
+                    "schema_tables_used": self._extract_tables_from_sql(cleaned_sql),
+                    "query_type": self._determine_query_type(cleaned_sql),
+                    "simple_query": self._is_simple_query(question)
+                }
+            )
+            
+        except Exception as e:
+            return self._create_result(
+                success=False,
+                error=f"SQL generation failed: {str(e)}"
+            )
             cleaned_sql = self._clean_sql_query(sql_query)
             
             return self._create_result(
@@ -187,6 +222,40 @@ class SQLGeneratorAgent(BaseAgent):
             
         except Exception as e:
             raise Exception(f"SQL generation failed: {str(e)}")
+    
+    async def _generate_sql_simple(self, question: str, schema_context: str) -> str:
+        """
+        Generate SQL for simple queries without intent analysis
+        Faster path for straightforward requests
+        """
+        simple_prompt = f"""
+Generate a SQL Server query for this request:
+{question}
+
+Database Schema:
+{schema_context}
+
+Rules:
+- Use dev. prefix for all tables
+- Use SELECT TOP instead of LIMIT  
+- Return only the SQL query, no explanations
+- For customer data use dev.cliente table
+- For sales data use dev.segmentacion table
+- Join tables when needed using customer_id
+"""
+        
+        from semantic_kernel.functions import KernelArguments
+        
+        # Create a simple inline function for this
+        result = await self.kernel.invoke_prompt(
+            prompt=simple_prompt,
+            settings={
+                "max_tokens": 400,
+                "temperature": 0.1
+            }
+        )
+        
+        return str(result).strip()
     
     def _clean_sql_query(self, sql_query: str) -> str:
         """
@@ -375,6 +444,15 @@ class SQLGeneratorAgent(BaseAgent):
         
         return list(set(tables))  # Remove duplicates
     
+    def _extract_tables_from_sql(self, sql_query: str) -> list:
+        """
+        Extract table names mentioned in the SQL query
+        """
+        # Pattern to match table names with dev. prefix
+        table_pattern = r'dev\.(\w+)'
+        tables = re.findall(table_pattern, sql_query, re.IGNORECASE)
+        return list(set(tables))  # Remove duplicates
+    
     def _determine_query_type(self, sql_query: str) -> str:
         """
         Determine the type of SQL query
@@ -435,3 +513,20 @@ class SQLGeneratorAgent(BaseAgent):
         else:
             # For simple SELECT queries, add TOP after the first SELECT
             return re.sub(r'\bSELECT\b', f'SELECT TOP {limit_value}', sql_query, count=1, flags=re.IGNORECASE)
+    
+    def _is_simple_query(self, question: str) -> bool:
+        """
+        Determine if query is simple enough to skip intent analysis
+        Simple patterns that can be handled directly
+        """
+        simple_patterns = [
+            r"^(show|list|display|get)\s+(all|me|the)?\s*(\w+)",
+            r"^select\s+.*\s+from",
+            r"^count\s+(all|the)?\s*(\w+)",
+            r"^how many\s+(\w+)",
+            r"^what\s+(are|is)\s+",
+            r"^give\s+me\s+(all|the)?\s*"
+        ]
+        
+        question_lower = question.lower().strip()
+        return any(re.match(pattern, question_lower) for pattern in simple_patterns)

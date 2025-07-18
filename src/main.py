@@ -8,12 +8,13 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import asyncio
-from dotenv import load_dotenv
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion
 
+from config import get_settings
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 from services.schema_service import SchemaService
+from services.query_cache import QueryCache
 from agents import SQLGeneratorAgent, ExecutorAgent, SummarizingAgent, OrchestratorAgent
 
 
@@ -23,23 +24,14 @@ class NL2SQLMultiAgentSystem:
     """
     
     def __init__(self):
-        # Load environment variables from same directory (override existing)
-        dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-        print(f"🔍 Loading .env from: {dotenv_path}")
-        print(f"🔍 .env file exists: {os.path.exists(dotenv_path)}")
-        result = load_dotenv(dotenv_path, override=True)
-        print(f"🔍 load_dotenv result: {result}")
-        
-        # Test reading environment variables
-        endpoint = os.getenv('AZURE_OPENAI_ENDPOINT')
-        deployment = os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')
-        print(f"🔍 AZURE_OPENAI_ENDPOINT: {endpoint[:50] if endpoint else 'None'}...")
-        print(f"🔍 AZURE_OPENAI_DEPLOYMENT_NAME: {deployment}")
+        # Use centralized settings
+        self.settings = get_settings()
         
         # Initialize components
         self.kernel = None
         self.mcp_plugin = None
         self.schema_service = None
+        self.query_cache = None
         
         # Initialize specialized agents
         self.sql_generator_agent = None
@@ -50,6 +42,7 @@ class NL2SQLMultiAgentSystem:
     async def initialize(self):
         """
         Initialize all components of the Multi-Agent NL2SQL System
+        Optimized with parallel initialization where possible
         """
         try:
             # Initialize Semantic Kernel
@@ -59,41 +52,45 @@ class NL2SQLMultiAgentSystem:
             await self._setup_ai_service()
             
             # Initialize MCP Database Plugin
-            mcp_server_url = os.getenv("MCP_SERVER_URL", "https://azsql-fastmcpserv2.jollyfield-479bc951.eastus2.azurecontainerapps.io/mcp/")
-            self.mcp_plugin = MCPDatabasePlugin(mcp_server_url=mcp_server_url)
+            self.mcp_plugin = MCPDatabasePlugin(mcp_server_url=self.settings.mcp_server_url)
             
             # Add MCP plugin to kernel
             self.kernel.add_plugin(self.mcp_plugin, plugin_name="database")
             
-            # Initialize Schema Service
+            # Initialize services in parallel with agent creation
+            print("🔄 Initializing services and agents in parallel...")
+            
+            # Initialize Schema Service and Query Cache
             self.schema_service = SchemaService(self.mcp_plugin)
+            self.query_cache = QueryCache()
             
-            # Initialize schema context
-            print("Initializing database schema context...")
-            schema_context = await self.schema_service.initialize_schema_context()
-            print("✅ Schema context initialized successfully!")
+            # Start schema context initialization (non-blocking)
+            schema_task = self.schema_service.initialize_schema_context()
             
-            # Initialize specialized agents
+            # Initialize agents (they don't need schema to be fully loaded)
             print("🤖 Initializing specialized agents...")
             
-            # SQL Generator Agent
             self.sql_generator_agent = SQLGeneratorAgent(self.kernel, self.schema_service)
             print("✅ SQL Generator Agent initialized")
             
-            # Executor Agent  
             self.executor_agent = ExecutorAgent(self.kernel, self.mcp_plugin)
             print("✅ Executor Agent initialized")
             
-            # Summarizing Agent
             self.summarizing_agent = SummarizingAgent(self.kernel)
             print("✅ Summarizing Agent initialized")
             
-            # Orchestrator Agent
+            # Wait for schema initialization to complete
+            print("⏳ Waiting for schema context initialization...")
+            await schema_task
+            print("✅ Schema context initialized successfully!")
+            
+            # Initialize orchestrator with query cache
             self.orchestrator_agent = OrchestratorAgent(
                 self.kernel, 
                 self.sql_generator_agent,
                 self.executor_agent, 
-                self.summarizing_agent
+                self.summarizing_agent,
+                self.query_cache
             )
             print("✅ Orchestrator Agent initialized")
             
@@ -107,40 +104,34 @@ class NL2SQLMultiAgentSystem:
         """
         Setup AI service (OpenAI or Azure OpenAI) for Semantic Kernel
         """
-        # Try Azure OpenAI first
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-        azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
-        azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+        settings = self.settings
         
-        if azure_endpoint and azure_api_key and azure_deployment:
+        # Try Azure OpenAI first
+        if settings.azure_openai_endpoint and settings.azure_openai_api_key and settings.azure_openai_deployment_name:
             print("🔧 Setting up Azure OpenAI service...")
-            print(f"   Endpoint: {azure_endpoint}")
-            print(f"   Deployment: {azure_deployment}")
-            print(f"   API Version: {azure_api_version}")
+            print(f"   Endpoint: {settings.azure_openai_endpoint}")
+            print(f"   Deployment: {settings.azure_openai_deployment_name}")
+            print(f"   API Version: {settings.azure_openai_api_version}")
             
             ai_service = AzureChatCompletion(
-                deployment_name=azure_deployment,
-                endpoint=azure_endpoint,
-                api_key=azure_api_key,
-                api_version=azure_api_version,
+                deployment_name=settings.azure_openai_deployment_name,
+                endpoint=settings.azure_openai_endpoint,
+                api_key=settings.azure_openai_api_key,
+                api_version=settings.azure_openai_api_version,
                 service_id="azure_openai"
             )
             self.kernel.add_service(ai_service)
             print("✅ Azure OpenAI service configured")
             return
         
-        # Fallback to OpenAI only if no Azure configuration
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
-        
-        if openai_api_key:
+        # Fallback to OpenAI
+        if settings.openai_api_key:
             print("🔧 Setting up OpenAI service...")
-            print(f"   Model: {openai_model}")
+            print(f"   Model: {settings.openai_model}")
             
             ai_service = OpenAIChatCompletion(
-                ai_model_id=openai_model,
-                api_key=openai_api_key,
+                ai_model_id=settings.openai_model,
+                api_key=settings.openai_api_key,
                 service_id="openai"
             )
             self.kernel.add_service(ai_service)
