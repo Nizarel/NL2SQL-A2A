@@ -1,8 +1,9 @@
 """
 Orchestrator Agent - Coordinates multi-agent workflow using Semantic Kernel 1.34.0
-Sequential Pattern: SQLGenerator → Executor → Summarizer
+Sequential Pattern: SchemaAnalyst → SQLGenerator → Executor → Summarizer
 """
 
+import re
 import time
 import asyncio
 from typing import Dict, Any, List, Optional
@@ -18,21 +19,25 @@ from .base_agent import BaseAgent
 from .sql_generator_agent import SQLGeneratorAgent
 from .executor_agent import ExecutorAgent
 from .summarizing_agent import SummarizingAgent
+from .schema_analyst_agent import SchemaAnalystAgent
 
 
 class OrchestratorAgent(BaseAgent):
     """
     Agent responsible for orchestrating the sequential multi-agent workflow:
-    1. SQLGeneratorAgent: Converts natural language to SQL
-    2. ExecutorAgent: Executes the generated SQL query
-    3. SummarizingAgent: Analyzes results and generates insights
+    1. SchemaAnalystAgent: Analyzes schema and provides optimized context
+    2. SQLGeneratorAgent: Converts natural language to SQL using optimized context
+    3. ExecutorAgent: Executes the generated SQL query
+    4. SummarizingAgent: Analyzes results and generates insights
     """
     
-    def __init__(self, kernel: Kernel, sql_generator: SQLGeneratorAgent, 
-                 executor: ExecutorAgent, summarizer: SummarizingAgent):
+    def __init__(self, kernel: Kernel, schema_analyst: SchemaAnalystAgent, 
+                 sql_generator: SQLGeneratorAgent, executor: ExecutorAgent, 
+                 summarizer: SummarizingAgent):
         super().__init__(kernel, "OrchestratorAgent")
         
         # Store agent references
+        self.schema_analyst = schema_analyst
         self.sql_generator = sql_generator
         self.executor = executor
         self.summarizer = summarizer
@@ -57,15 +62,34 @@ class OrchestratorAgent(BaseAgent):
             )
             
             # Create ChatCompletionAgents that wrap our specialized agents
+            schema_analysis_agent = ChatCompletionAgent(
+                kernel=self.kernel,
+                name="SchemaAnalystAgent",
+                instructions="""You are a schema analysis specialist. Your role is to:
+1. Analyze natural language questions against the provided database schema
+2. Identify the most relevant tables and columns for the question
+3. For revenue/sales questions, focus on 'segmentacion' table with 'IngresoNetoSImpuestos' column
+4. For customer questions, use 'cliente' table with customer details
+5. Provide specific table and column recommendations to the SQL Generator
+6. Recommend optimal join strategies between tables
+7. Pass the exact table/column names to be used in SQL generation
+
+Available tables: cliente, cliente_cedi, mercado, producto, segmentacion, tiempo"""
+            )
+            
             sql_generation_agent = ChatCompletionAgent(
                 kernel=self.kernel,
                 name="SQLGeneratorAgent",
                 instructions="""You are a SQL generation specialist. Your role is to:
-1. Analyze natural language questions about data
-2. Generate accurate SQL queries using the provided database schema
-3. Ensure all table names use the 'dev.' schema prefix
-4. Focus only on SELECT queries for data retrieval
-5. Return well-formatted, executable SQL queries"""
+1. Generate EXECUTABLE SQL queries using the provided database schema
+2. Use ONLY the exact table names and column names from the schema
+3. Use 'dev.tablename' format for all table references
+4. For revenue queries, use 'IngresoNetoSImpuestos' column from 'segmentacion' table
+5. Return ONLY valid SQL Server syntax - NO placeholders or template variables
+6. Focus on SELECT queries for data retrieval
+7. Use proper JOIN syntax when combining tables
+
+CRITICAL: Never use placeholders like [REVENUE_TABLE] or [column_name]. Always use the actual names from the provided schema."""
             )
             
             query_executor_agent = ChatCompletionAgent(
@@ -92,7 +116,7 @@ class OrchestratorAgent(BaseAgent):
             
             # Create AgentGroupChat with Sequential Selection Strategy
             self.agent_group_chat = AgentGroupChat(
-                agents=[sql_generation_agent, query_executor_agent, data_analysis_agent],
+                agents=[schema_analysis_agent, sql_generation_agent, query_executor_agent, data_analysis_agent],
                 selection_strategy=SequentialSelectionStrategy()
             )
             
@@ -179,9 +203,10 @@ class OrchestratorAgent(BaseAgent):
         Execute sequential workflow using Semantic Kernel AgentGroupChat
         """
         try:
-            # Build comprehensive context for the agent group
-            schema_context = self.sql_generator.schema_service.get_full_schema_summary()
+            # Get the actual database schema for SK agents
+            schema_context = self.schema_analyst.schema_service.get_full_schema_summary()
             
+            # Build comprehensive context for the agent group
             workflow_prompt = f"""
 SEQUENTIAL NL2SQL WORKFLOW REQUEST:
 
@@ -192,13 +217,18 @@ Execution Parameters:
 - Row Limit: {params['limit']} 
 - Include Summary: {params['include_summary']}
 
-Database Schema Context:
+DATABASE SCHEMA (Use these exact table and column names):
 {schema_context}
 
 WORKFLOW STEPS (Execute in this exact sequence):
-1. SQLGeneratorAgent: Generate SQL query from the question
-2. ExecutorAgent: Execute the SQL query and return results  
-3. SummarizingAgent: Analyze results and provide business insights
+1. SchemaAnalystAgent: Analyze question to identify relevant tables from the schema above
+2. SQLGeneratorAgent: Generate EXECUTABLE SQL query using ONLY the table/column names from the schema above
+   - Use dev.tablename format for all tables
+   - Use actual column names from the schema (e.g., IngresoNetoSImpuestos for revenue)
+   - NO placeholders like [REVENUE_TABLE] or [column_name]
+   - Return valid SQL Server syntax only
+3. ExecutorAgent: Execute the SQL query and return results  
+4. SummarizingAgent: Analyze results and provide business insights
 
 Each agent should complete their step and pass results to the next agent.
 """
@@ -219,7 +249,7 @@ Each agent should complete their step and pass results to the next agent.
                     agent_responses.append(response)
                     
                     # Limit responses to prevent infinite loops
-                    if len(agent_responses) >= 3:  # We expect 3 agents in sequence
+                    if len(agent_responses) >= 4:  # We expect 4 agents in sequence (Schema + SQL + Exec + Summary)
                         break
                         
             except Exception as sk_error:
@@ -247,20 +277,56 @@ Each agent should complete their step and pass results to the next agent.
     
     async def _execute_manual_sequential_workflow(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute sequential workflow manually using direct agent calls
+        Execute sequential workflow manually using direct agent calls with Schema Analyst integration
         """
         workflow_results = {
+            "schema_analysis": None,
             "sql_generation": None,
             "execution": None, 
             "summarization": None
         }
         
         try:
-            # Step 1: SQL Generation
-            print("🧠 Step 1/3: Generating SQL query...")
+            # Step 0: Schema Analysis - NEW STEP for optimized context
+            print("🔍 Step 0/4: Analyzing schema context...")
+            schema_analysis = await self.schema_analyst.process({
+                "question": params["question"],
+                "context": params.get("context", ""),
+                "use_cache": True,
+                "similarity_threshold": 0.85
+            })
+            workflow_results["schema_analysis"] = schema_analysis
+            
+            if not schema_analysis["success"]:
+                print(f"⚠️ Schema analysis failed: {schema_analysis['error']}")
+                # Continue with fallback to full schema
+                optimized_schema_context = self.sql_generator.schema_service.get_full_schema_summary()
+                cache_info = "No cache (analysis failed)"
+            else:
+                # Extract optimized schema context
+                analysis_data = schema_analysis["data"]
+                optimized_schema_context = analysis_data.get("optimized_schema", "")
+                
+                # Log cache hit information
+                cache_info = schema_analysis.get("metadata", {})
+                if cache_info.get("cache_hit"):
+                    cache_type = cache_info.get("cache_type", "unknown")
+                    print(f"✅ Schema analysis: Cache HIT ({cache_type})")
+                    if cache_type == "semantic":
+                        similarity = cache_info.get("semantic_similarity", 0)
+                        print(f"   Semantic similarity: {similarity:.3f}")
+                else:
+                    print(f"✅ Schema analysis: Fresh analysis ({cache_info.get('analysis_time', 0):.3f}s)")
+                    print(f"   Relevant tables: {analysis_data.get('relevant_tables', [])}")
+                    print(f"   Confidence score: {analysis_data.get('confidence_score', 0):.3f}")
+            
+            # Step 1: SQL Generation with optimized context
+            print("🧠 Step 1/4: Generating SQL query with optimized schema context...")
             sql_result = await self.sql_generator.process({
                 "question": params["question"],
-                "context": params.get("context", "")
+                "context": params.get("context", ""),
+                "optimized_schema_context": optimized_schema_context,  # NEW: Pass optimized context
+                "schema_analysis": schema_analysis["data"] if schema_analysis["success"] else None
             })
             workflow_results["sql_generation"] = sql_result
             
@@ -268,7 +334,8 @@ Each agent should complete their step and pass results to the next agent.
                 return self._create_result(
                     success=False,
                     error=f"SQL generation failed: {sql_result['error']}",
-                    data=workflow_results
+                    data=workflow_results,
+                    metadata={"cache_info": cache_info}
                 )
             
             generated_sql = sql_result["data"]["sql_query"]
@@ -277,7 +344,7 @@ Each agent should complete their step and pass results to the next agent.
             # Step 2: SQL Execution (if requested)
             execution_result = None
             if params.get("execute", True):
-                print("⚡ Step 2/3: Executing SQL query...")
+                print("⚡ Step 2/4: Executing SQL query...")
                 execution_result = await self.executor.process({
                     "sql_query": generated_sql,
                     "limit": params.get("limit", 100),
@@ -293,20 +360,21 @@ Each agent should complete their step and pass results to the next agent.
                             "sql_query": generated_sql,
                             "execution_error": execution_result["error"]
                         },
-                        metadata=workflow_results
+                        metadata={**workflow_results, "cache_info": cache_info}
                     )
                 print("✅ SQL executed successfully")
             
             # Step 3: Data Summarization (if requested and execution succeeded)
             summarization_result = None
             if params.get("include_summary", True) and execution_result and execution_result["success"]:
-                print("📊 Step 3/3: Generating insights and summary...")
+                print("📊 Step 3/4: Generating insights and summary...")
                 summarization_result = await self.summarizer.process({
                     "raw_results": execution_result["data"]["raw_results"],
                     "formatted_results": execution_result["data"]["formatted_results"],
                     "sql_query": generated_sql,
                     "question": params["question"],
-                    "metadata": execution_result["metadata"]
+                    "metadata": execution_result["metadata"],
+                    "schema_analysis": schema_analysis["data"] if schema_analysis["success"] else None  # NEW: Pass analysis context
                 })
                 workflow_results["summarization"] = summarization_result
                 
@@ -315,14 +383,29 @@ Each agent should complete their step and pass results to the next agent.
                 else:
                     print(f"⚠️ Summary generation had issues: {summarization_result['error']}")
             
-            # Compile final results
-            return self._compile_workflow_results(workflow_results, params)
+            # Compile final results with schema analysis metadata
+            final_result = self._compile_workflow_results(workflow_results, params)
+            
+            # Set optimization metadata
+            final_result["metadata"]["cache_info"] = cache_info
+            final_result["metadata"]["schema_optimization"] = "enabled"
+            final_result["metadata"]["schema_source"] = "optimized"
+            final_result["metadata"]["schema_context_size"] = len(optimized_schema_context) if optimized_schema_context else 0
+            
+            # Add analysis timing if available
+            if schema_analysis and schema_analysis["success"]:
+                analysis_metadata = schema_analysis.get("metadata", {})
+                if analysis_metadata.get("analysis_time"):
+                    final_result["metadata"]["schema_analysis_time"] = analysis_metadata["analysis_time"]
+            
+            return final_result
             
         except Exception as e:
             return self._create_result(
                 success=False,
                 error=f"Manual sequential workflow failed: {str(e)}",
-                data=workflow_results
+                data=workflow_results,
+                metadata={"cache_info": cache_info if 'cache_info' in locals() else "error"}
             )
     
     async def _parse_sk_workflow_results(self, agent_responses: List, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -344,39 +427,21 @@ Each agent should complete their step and pass results to the next agent.
                     content = response.content
                     print(f"🔍 Examining SQLGenerator response: {content[:200]}...")
                     
-                    # Simple extraction of SQL from markdown code blocks
-                    if '```sql' in content:
-                        sql_start = content.find('```sql') + 6
-                        sql_end = content.find('```', sql_start)
-                        if sql_end > sql_start:
-                            sql_query = content[sql_start:sql_end].strip()
-                    elif '```' in content and 'SELECT' in content.upper():
-                        # Handle plain code blocks with SELECT
-                        sql_start = content.find('```') + 3
-                        sql_end = content.find('```', sql_start)
-                        if sql_end > sql_start:
-                            potential_sql = content[sql_start:sql_end].strip()
-                            if 'SELECT' in potential_sql.upper():
-                                sql_query = potential_sql
-                    elif 'SELECT' in content.upper():
-                        # Extract SELECT statement directly - look for complete statement
-                        lines = content.split('\n')
-                        sql_lines = []
-                        in_sql = False
-                        
-                        for line in lines:
-                            line = line.strip()
-                            if line.upper().startswith('SELECT'):
-                                in_sql = True
-                            if in_sql and line:
-                                sql_lines.append(line)
-                                # Stop at semicolon or if we see typical SQL ending patterns
-                                if line.endswith(';') or line.upper().startswith('LIMIT'):
-                                    break
-                        
-                        if sql_lines and len(' '.join(sql_lines)) > 20:  # Ensure meaningful SQL
-                            sql_query = '\n'.join(sql_lines)
-                    break
+                    # Enhanced SQL extraction logic to handle various response formats
+                    sql_query = self._extract_sql_from_response(content)
+                    if sql_query:
+                        break
+            
+            # If no SQL found in SQLGenerator responses, try all responses
+            if not sql_query:
+                print("🔍 No SQL found in SQLGenerator response, checking all responses...")
+                for response in agent_responses:
+                    if hasattr(response, 'content'):
+                        content = response.content
+                        sql_query = self._extract_sql_from_response(content)
+                        if sql_query:
+                            print(f"🔍 Found SQL in {getattr(response, 'name', 'unknown')} response")
+                            break
             
             if sql_query:
                 print(f"✅ Extracted SQL from SK workflow: {sql_query[:100]}...")
@@ -420,7 +485,7 @@ Each agent should complete their step and pass results to the next agent.
                     })
                     print(f"🔍 Summary result success: {summarization_result.get('success') if summarization_result else 'None'}")
                 
-                # Compile results using our standard format
+                # Compile results using our standard format with optimization metadata
                 workflow_results = {
                     "sql_generation": {
                         "success": True,
@@ -433,7 +498,60 @@ Each agent should complete their step and pass results to the next agent.
                 
                 result = self._compile_workflow_results(workflow_results, params)
                 result["metadata"]["orchestration_type"] = "semantic_kernel_hybrid"
+                result["metadata"]["schema_optimization"] = "enabled"
+                result["metadata"]["schema_source"] = "optimized"
+                result["metadata"]["schema_context_size"] = len(str(cleaned_sql))  # Approximate context size
+                result["metadata"]["steps_completed"] = ["schema_analysis", "sql_generation"]
+                
+                # Add execution step if successful
+                if execution_result and execution_result["success"]:
+                    result["metadata"]["steps_completed"].append("execution")
+                
+                # Add summarization step if successful
+                if summarization_result and summarization_result["success"]:
+                    result["metadata"]["steps_completed"].append("summarization")
+                
                 print("🎉 Successfully completed SK hybrid workflow!")
+                
+                # Run our real Schema Analyst to get actual analysis results for the question
+                # This ensures we have proper schema analysis data in the final result
+                print("🔍 Running Schema Analyst to capture analysis results...")
+                schema_analysis_result = await self.schema_analyst.process({
+                    "question": params["question"],
+                    "context": params.get("context", ""),
+                    "use_cache": True,
+                    "similarity_threshold": 0.85
+                })
+                
+                # Include the actual schema analysis in workflow results
+                workflow_results["schema_analysis"] = schema_analysis_result
+                
+                # Recompile results with schema analysis included
+                result = self._compile_workflow_results(workflow_results, params)
+                result["metadata"]["orchestration_type"] = "semantic_kernel_hybrid"
+                result["metadata"]["schema_optimization"] = "enabled"
+                result["metadata"]["schema_source"] = "optimized"
+                result["metadata"]["schema_context_size"] = len(str(cleaned_sql))  # Approximate context size
+                result["metadata"]["steps_completed"] = ["schema_analysis", "sql_generation"]
+                
+                # Add schema analysis metadata if available
+                if schema_analysis_result and schema_analysis_result["success"]:
+                    schema_metadata = schema_analysis_result.get("metadata", {})
+                    result["metadata"].update({
+                        "schema_cache_hit": schema_metadata.get("cache_hit", False),
+                        "schema_cache_type": schema_metadata.get("cache_type"),
+                        "schema_analysis_time": schema_metadata.get("analysis_time"),
+                        "schema_confidence": schema_analysis_result["data"].get("confidence_score", 0)
+                    })
+                
+                # Add execution step if successful
+                if execution_result and execution_result["success"]:
+                    result["metadata"]["steps_completed"].append("execution")
+                
+                # Add summarization step if successful
+                if summarization_result and summarization_result["success"]:
+                    result["metadata"]["steps_completed"].append("summarization")
+                
                 return result
                 
             else:
@@ -445,10 +563,123 @@ Each agent should complete their step and pass results to the next agent.
             print("⚠️ Falling back to manual workflow for result compilation")
             return await self._execute_manual_sequential_workflow(params)
     
+    def _extract_sql_from_response(self, content: str) -> str:
+        """
+        Enhanced SQL extraction from agent response content
+        Handles various formats including markdown, explanatory text, and direct SQL
+        """
+        if not content or 'SELECT' not in content.upper():
+            return None
+        
+        # Strategy 1: Extract from ```sql markdown blocks
+        sql_pattern = r'```sql\s*(.*?)\s*```'
+        matches = re.findall(sql_pattern, content, re.DOTALL | re.IGNORECASE)
+        if matches:
+            sql_candidate = matches[0].strip()
+            if self._is_valid_sql_candidate(sql_candidate):
+                return sql_candidate
+        
+        # Strategy 2: Extract from plain ``` code blocks containing SELECT
+        code_pattern = r'```\s*(.*?)\s*```'
+        matches = re.findall(code_pattern, content, re.DOTALL)
+        for match in matches:
+            match = match.strip()
+            if 'SELECT' in match.upper() and self._is_valid_sql_candidate(match):
+                return match
+        
+        # Strategy 3: Extract multiline SELECT statements from free text
+        lines = content.split('\n')
+        sql_lines = []
+        in_sql_block = False
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            
+            # Start collecting when we see SELECT
+            if line.upper().startswith('SELECT') or (line.upper().startswith('WITH') and i < len(lines) - 1 and 'SELECT' in lines[i+1].upper()):
+                in_sql_block = True
+                sql_lines = [line]
+                continue
+            
+            if in_sql_block:
+                # Continue collecting SQL lines
+                if line:
+                    sql_lines.append(line)
+                
+                # Stop conditions
+                if (line.endswith(';') or 
+                    line.upper().startswith('LIMIT') or 
+                    line.upper().startswith('ORDER BY') and ';' in line or
+                    i == len(lines) - 1):  # End of content
+                    
+                    sql_candidate = '\n'.join(sql_lines)
+                    if self._is_valid_sql_candidate(sql_candidate):
+                        return sql_candidate
+                    else:
+                        # Reset and continue looking
+                        in_sql_block = False
+                        sql_lines = []
+                
+                # Reset if we hit explanatory text that indicates end of SQL
+                elif (line.upper().startswith('THIS QUERY') or 
+                      line.upper().startswith('EXPLANATION') or
+                      line.upper().startswith('NOTE:') or
+                      line.upper().startswith('THE ABOVE') or
+                      line.upper().startswith('STEP ') or
+                      line.upper().startswith('**STEP')):
+                    
+                    sql_candidate = '\n'.join(sql_lines[:-1])  # Exclude the explanatory line
+                    if self._is_valid_sql_candidate(sql_candidate):
+                        return sql_candidate
+                    else:
+                        in_sql_block = False
+                        sql_lines = []
+        
+        # Strategy 4: Look for single-line SELECT statements
+        for line in lines:
+            line = line.strip()
+            if (line.upper().startswith('SELECT') and 
+                ('FROM' in line.upper() or 'TOP' in line.upper()) and
+                len(line) > 30):  # Likely a complete SQL statement
+                return line
+        
+        return None
+    
+    def _is_valid_sql_candidate(self, sql_text: str) -> bool:
+        """
+        Check if extracted text is likely a valid SQL query
+        """
+        if not sql_text or len(sql_text.strip()) < 20:
+            return False
+        
+        sql_upper = sql_text.upper()
+        
+        # Must contain SELECT
+        if 'SELECT' not in sql_upper:
+            return False
+        
+        # Should contain FROM (basic SQL structure)
+        if 'FROM' not in sql_upper:
+            return False
+        
+        # Should not contain too much explanatory text
+        explanatory_keywords = ['STEP ', 'NOTE:', 'EXPLANATION', 'THIS QUERY', 'THE ABOVE', '**STEP']
+        explanatory_ratio = sum(1 for keyword in explanatory_keywords if keyword in sql_upper)
+        if explanatory_ratio > 2:  # Too much explanation mixed in
+            return False
+        
+        # Check for basic SQL keywords
+        sql_keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP', 'ORDER', 'JOIN', 'AS']
+        keyword_count = sum(1 for keyword in sql_keywords if keyword in sql_upper)
+        
+        # Should have at least 2 SQL keywords
+        return keyword_count >= 2
+    
     def _compile_workflow_results(self, workflow_results: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Compile results from all workflow steps into final response
         """
+        schema_analysis = workflow_results.get("schema_analysis")
         sql_generation = workflow_results.get("sql_generation")
         execution = workflow_results.get("execution") 
         summarization = workflow_results.get("summarization")
@@ -460,6 +691,15 @@ Each agent should complete their step and pass results to the next agent.
             "results": None,
             "formatted_results": None
         }
+        
+        # Add schema analysis results if available
+        if schema_analysis and schema_analysis["success"]:
+            response_data["schema_analysis"] = {
+                "relevant_tables": schema_analysis["data"].get("relevant_tables", []),
+                "join_strategy": schema_analysis["data"].get("join_strategy", {}),
+                "performance_hints": schema_analysis["data"].get("performance_hints", []),
+                "confidence_score": schema_analysis["data"].get("confidence_score", 0)
+            }
         
         # Add execution results if available
         if execution and execution["success"]:
@@ -484,12 +724,23 @@ Each agent should complete their step and pass results to the next agent.
         # Compile metadata
         metadata = {
             "workflow_success": True,
-            "orchestration_type": "semantic_kernel" if self.agent_group_chat else "manual_sequential",
+            "orchestration_type": "schema_optimized",
             "steps_completed": [step for step, result in workflow_results.items() if result and result["success"]],
+            "schema_analyzed": bool(schema_analysis and schema_analysis["success"]),
             "sql_generated": bool(sql_generation and sql_generation["success"]),
             "query_executed": bool(execution and execution["success"]),
             "summary_generated": bool(summarization and summarization["success"])
         }
+        
+        # Add schema analysis metadata if available
+        if schema_analysis and schema_analysis["success"]:
+            schema_metadata = schema_analysis.get("metadata", {})
+            metadata.update({
+                "schema_cache_hit": schema_metadata.get("cache_hit", False),
+                "schema_cache_type": schema_metadata.get("cache_type"),
+                "schema_analysis_time": schema_metadata.get("analysis_time"),
+                "schema_confidence": schema_analysis["data"].get("confidence_score")
+            })
         
         # Add execution metadata if available
         if execution and execution["success"]:
@@ -510,7 +761,7 @@ Each agent should complete their step and pass results to the next agent.
         """
         Get list of workflow steps based on parameters
         """
-        steps = ["sql_generation"]
+        steps = ["schema_analysis", "sql_generation"]
         if execute:
             steps.append("execution")
             if include_summary:
@@ -526,12 +777,16 @@ Each agent should complete their step and pass results to the next agent.
             data={
                 "orchestrator": "active",
                 "agents": {
+                    "schema_analyst": "ready",
                     "sql_generator": "ready",
                     "executor": "ready", 
                     "summarizer": "ready"
                 },
-                "orchestration_mode": "semantic_kernel" if self.agent_group_chat else "manual_sequential",
+                "orchestration_mode": "schema_optimized",
                 "workflow_capabilities": {
+                    "schema_analysis": True,
+                    "intelligent_caching": True,
+                    "optimized_context": True,
                     "sql_generation": True,
                     "query_execution": True,
                     "data_summarization": True,

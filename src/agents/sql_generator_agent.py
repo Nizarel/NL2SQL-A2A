@@ -91,6 +91,8 @@ class SQLGeneratorAgent(BaseAgent):
             input_data: Dictionary containing:
                 - question: User's natural language question
                 - context: Optional additional context
+                - optimized_schema_context: Optimized schema from Schema Analyst (NEW)
+                - schema_analysis: Full schema analysis results (NEW)
                 
         Returns:
             Dictionary containing generated SQL query and metadata
@@ -98,6 +100,8 @@ class SQLGeneratorAgent(BaseAgent):
         try:
             question = input_data.get("question", "")
             context = input_data.get("context", "")
+            optimized_schema_context = input_data.get("optimized_schema_context")
+            schema_analysis = input_data.get("schema_analysis")
             
             if not question:
                 return self._create_result(
@@ -105,17 +109,41 @@ class SQLGeneratorAgent(BaseAgent):
                     error="No question provided"
                 )
             
-            # Get schema context
-            schema_context = self.schema_service.get_full_schema_summary()
+            # Use optimized schema context if provided, otherwise fall back to full schema
+            if optimized_schema_context:
+                schema_context = optimized_schema_context
+                schema_source = "optimized"
+                print("🎯 Using optimized schema context from Schema Analyst")
+            else:
+                schema_context = self.schema_service.get_full_schema_summary()
+                schema_source = "full"
+                print("⚠️ Using full schema context (no optimization available)")
             
-            # Analyze user intent
-            intent_analysis = await self._analyze_intent(question, context)
+            # Analyze user intent (enhanced with schema analysis if available)
+            intent_analysis = await self._analyze_intent(question, context, schema_analysis)
             
-            # Generate SQL query
-            sql_query = await self._generate_sql(question, schema_context, intent_analysis)
+            # Generate SQL query with optimized context
+            sql_query = await self._generate_sql(question, schema_context, intent_analysis, schema_analysis)
             
             # Clean and validate SQL
             cleaned_sql = self._clean_sql_query(sql_query)
+            
+            # Prepare metadata
+            metadata = {
+                "schema_tables_used": self._extract_tables_from_sql(cleaned_sql),
+                "query_type": self._determine_query_type(cleaned_sql),
+                "schema_source": schema_source,
+                "schema_context_size": len(schema_context) if schema_context else 0
+            }
+            
+            # Add schema analysis metadata if available
+            if schema_analysis:
+                metadata.update({
+                    "relevant_tables": schema_analysis.get("relevant_tables", []),
+                    "confidence_score": schema_analysis.get("confidence_score", 0),
+                    "join_strategy": schema_analysis.get("join_strategy", {}).get("strategy", "unknown"),
+                    "performance_hints_count": len(schema_analysis.get("performance_hints", []))
+                })
             
             return self._create_result(
                 success=True,
@@ -124,10 +152,7 @@ class SQLGeneratorAgent(BaseAgent):
                     "intent_analysis": intent_analysis,
                     "question": question
                 },
-                metadata={
-                    "schema_tables_used": self._extract_tables_from_sql(cleaned_sql),
-                    "query_type": self._determine_query_type(cleaned_sql)
-                }
+                metadata=metadata
             )
             
         except Exception as e:
@@ -136,9 +161,10 @@ class SQLGeneratorAgent(BaseAgent):
                 error=f"SQL generation failed: {str(e)}"
             )
     
-    async def _analyze_intent(self, question: str, context: str = "") -> Dict[str, Any]:
+    async def _analyze_intent(self, question: str, context: str = "", schema_analysis: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Analyze user intent from the question using Jinja2 template
+        Enhanced with schema analysis context if available
         """
         try:
             # Create kernel arguments for the template
@@ -148,6 +174,12 @@ class SQLGeneratorAgent(BaseAgent):
                 question=question,
                 context=context if context else None
             )
+            
+            # Add schema analysis context if available for enhanced intent understanding
+            if schema_analysis:
+                arguments["relevant_tables"] = str(schema_analysis.get("relevant_tables", []))
+                arguments["business_context"] = str(schema_analysis.get("business_context", {}))
+                arguments["key_metrics"] = str(schema_analysis.get("key_metrics", []))
             
             # Invoke the intent analysis function
             result = await self.kernel.invoke(
@@ -162,9 +194,11 @@ class SQLGeneratorAgent(BaseAgent):
         except Exception as e:
             return {"analysis": f"Intent analysis failed: {str(e)}"}
     
-    async def _generate_sql(self, question: str, schema_context: str, intent_analysis: Dict[str, Any]) -> str:
+    async def _generate_sql(self, question: str, schema_context: str, intent_analysis: Dict[str, Any], 
+                           schema_analysis: Dict[str, Any] = None) -> str:
         """
         Generate SQL query based on question and schema context using Jinja2 template
+        Enhanced with schema analysis results for better SQL generation
         """
         try:
             # Create kernel arguments for the template
@@ -175,6 +209,13 @@ class SQLGeneratorAgent(BaseAgent):
                 schema_context=schema_context,
                 intent_analysis=intent_analysis
             )
+            
+            # Add schema analysis context for enhanced SQL generation
+            if schema_analysis:
+                arguments["relevant_tables"] = str(schema_analysis.get("relevant_tables", []))
+                arguments["join_strategy"] = str(schema_analysis.get("join_strategy", {}))
+                arguments["performance_hints"] = str(schema_analysis.get("performance_hints", []))
+                arguments["key_metrics"] = str(schema_analysis.get("key_metrics", []))
             
             # Invoke the SQL generation function
             result = await self.kernel.invoke(

@@ -93,19 +93,19 @@ class NL2SQLMultiAgentSystem:
             # Schema Analyst Agent (NEW)
             self.schema_analyst_agent = SchemaAnalystAgent(
                 self.kernel, 
-                self.schema_service, 
-                embedding_service=self.embedding_service
+                self.schema_service
             )
             print("✅ Schema Analyst Agent initialized")
             
-            # Orchestrator Agent
+            # Orchestrator Agent with Schema Analyst integration
             self.orchestrator_agent = OrchestratorAgent(
-                self.kernel, 
+                self.kernel,
+                self.schema_analyst_agent,  # NEW: Pass Schema Analyst first
                 self.sql_generator_agent,
                 self.executor_agent, 
                 self.summarizing_agent
             )
-            print("✅ Orchestrator Agent initialized")
+            print("✅ Orchestrator Agent initialized with Schema Analyst integration")
             
             print("🚀 Multi-Agent NL2SQL System initialized successfully!")
             
