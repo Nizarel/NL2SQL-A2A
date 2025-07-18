@@ -395,19 +395,19 @@ Rules:
         # Ensure proper spacing around AS keyword
         sql_query = re.sub(r'\s+AS\s+', ' AS ', sql_query, flags=re.IGNORECASE)
         
-        # Ensure dev. prefix is used for known tables
+        # Ensure dev. prefix is used for known tables (only if not already present)
         table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
         for table in table_names:
-            # Replace FROM table with FROM dev.table (case insensitive)
+            # Replace FROM table with FROM dev.table (only if dev. prefix not already there)
             sql_query = re.sub(
-                rf'\bFROM\s+{table}\b',
+                rf'\bFROM\s+(?!dev\.){table}\b',
                 f'FROM dev.{table}',
                 sql_query,
                 flags=re.IGNORECASE
             )
-            # Replace JOIN table with JOIN dev.table (case insensitive)
+            # Replace JOIN table with JOIN dev.table (only if dev. prefix not already there)
             sql_query = re.sub(
-                rf'\bJOIN\s+{table}\b',
+                rf'\bJOIN\s+(?!dev\.){table}\b',
                 f'JOIN dev.{table}',
                 sql_query,
                 flags=re.IGNORECASE
@@ -429,9 +429,9 @@ Rules:
     
     def _extract_tables_from_sql(self, sql_query: str) -> list:
         """
-        Extract table names used in SQL query
+        Extract table names mentioned in the SQL query
         """
-        # Simple regex to find table names after FROM and JOIN
+        # Pattern to match table names with optional dev. prefix
         tables = []
         patterns = [
             r'FROM\s+(?:dev\.)?(\w+)',
@@ -442,15 +442,6 @@ Rules:
             matches = re.findall(pattern, sql_query, re.IGNORECASE)
             tables.extend(matches)
         
-        return list(set(tables))  # Remove duplicates
-    
-    def _extract_tables_from_sql(self, sql_query: str) -> list:
-        """
-        Extract table names mentioned in the SQL query
-        """
-        # Pattern to match table names with dev. prefix
-        table_pattern = r'dev\.(\w+)'
-        tables = re.findall(table_pattern, sql_query, re.IGNORECASE)
         return list(set(tables))  # Remove duplicates
     
     def _determine_query_type(self, sql_query: str) -> str:

@@ -9,6 +9,9 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
+# Get the directory where this config.py file is located
+_CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 class Settings(BaseSettings):
     """
@@ -18,6 +21,7 @@ class Settings(BaseSettings):
     azure_openai_endpoint: Optional[str] = Field(None, env="AZURE_OPENAI_ENDPOINT")
     azure_openai_api_key: Optional[str] = Field(None, env="AZURE_OPENAI_API_KEY")
     azure_openai_deployment_name: Optional[str] = Field(None, env="AZURE_OPENAI_DEPLOYMENT_NAME")
+    azure_openai_mini_deployment_name: Optional[str] = Field(None, env="AZURE_OPENAI_MINI_DEPLOYMENT_NAME")
     azure_openai_api_version: str = Field("2024-12-01-preview", env="AZURE_OPENAI_API_VERSION")
     
     # OpenAI Configuration
@@ -50,7 +54,7 @@ class Settings(BaseSettings):
     max_response_size: int = Field(10000, env="MAX_RESPONSE_SIZE")  # Characters
     
     class Config:
-        env_file = ".env"
+        env_file = os.path.join(_CONFIG_DIR, ".env")  # Look for .env in same directory as config.py
         env_file_encoding = "utf-8"
         case_sensitive = False
 
