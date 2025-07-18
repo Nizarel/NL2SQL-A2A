@@ -5,6 +5,7 @@ Executor Agent - Executes SQL queries and handles database operations
 import time
 import os
 import re
+import asyncio
 from typing import Dict, Any
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
@@ -49,6 +50,28 @@ class ExecutorAgent(BaseAgent):
             print(f"💰 ExecutorAgent using cost-optimized model: {mini_deployment}")
         
         return mini_kernel
+    
+    async def _optimize_query(self, sql_query: str) -> str:
+        """
+        Optimize SQL query for better performance
+        """
+        optimized = sql_query
+        
+        # Add NOLOCK hint for read queries to avoid locking
+        if "SELECT" in optimized.upper() and "FOR UPDATE" not in optimized.upper():
+            # Add WITH (NOLOCK) to all table references
+            table_pattern = r'(FROM|JOIN)\s+(dev\.\w+)(?!\s+WITH)'
+            optimized = re.sub(
+                table_pattern,
+                r'\1 \2 WITH (NOLOCK)',
+                optimized,
+                flags=re.IGNORECASE
+            )
+        
+        # Ensure indexes are utilized by adding index hints if needed
+        # This would require knowledge of actual indexes, so it's a placeholder
+        
+        return optimized
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -82,8 +105,10 @@ class ExecutorAgent(BaseAgent):
                     error=f"SQL validation failed: {validation_result['error']}"
                 )
             
+            # Optimize query
+            optimized_query = await self._optimize_query(sql_query)
             # Execute the query
-            execution_result = await self._execute_query(sql_query, limit, timeout)
+            execution_result = await self._execute_query(optimized_query, limit, timeout)
             
             if execution_result["success"]:
                 return self._create_result(
@@ -91,13 +116,14 @@ class ExecutorAgent(BaseAgent):
                     data={
                         "raw_results": execution_result["results"],
                         "formatted_results": execution_result["formatted_results"],
-                        "sql_query": sql_query
+                        "sql_query": optimized_query
                     },
                     metadata={
                         "execution_time": execution_result["execution_time"],
                         "row_count": execution_result["row_count"],
                         "query_type": validation_result["query_type"],
-                        "columns": execution_result.get("columns", [])
+                        "columns": execution_result.get("columns", []),
+                        "optimized": optimized_query != sql_query
                     }
                 )
             else:
@@ -105,7 +131,7 @@ class ExecutorAgent(BaseAgent):
                     success=False,
                     error=execution_result["error"],
                     metadata={
-                        "sql_query": sql_query,
+                        "sql_query": optimized_query,
                         "execution_time": execution_result.get("execution_time", 0)
                     }
                 )
@@ -248,8 +274,11 @@ class ExecutorAgent(BaseAgent):
         start_time = time.time()
         
         try:
-            # Execute query via MCP plugin
-            result = await self.mcp_plugin.read_data(sql_query, limit)
+            # Execute query via MCP plugin with timeout
+            result = await asyncio.wait_for(
+                self.mcp_plugin.read_data(sql_query, limit),
+                timeout=timeout
+            )
             
             execution_time = time.time() - start_time
             
@@ -276,6 +305,17 @@ class ExecutorAgent(BaseAgent):
                 "error": None
             }
             
+        except asyncio.TimeoutError:
+            execution_time = time.time() - start_time
+            return {
+                "success": False,
+                "results": None,
+                "formatted_results": None,
+                "execution_time": round(execution_time, 3),
+                "row_count": 0,
+                "columns": [],
+                "error": f"Query execution timed out after {timeout} seconds"
+            }
         except Exception as e:
             execution_time = time.time() - start_time
             error_message = str(e)
@@ -425,3 +465,20 @@ class ExecutorAgent(BaseAgent):
             return "FILTERED_SELECT"
         else:
             return "SIMPLE_SELECT"
+    
+    async def _optimize_query(self, sql_query: str) -> str:
+        """
+        Optimize SQL query for better performance
+        """
+        optimized = sql_query
+        # Add NOLOCK hint for read queries to avoid locking
+        if "SELECT" in optimized.upper() and "FOR UPDATE" not in optimized.upper():
+            table_pattern = r'(FROM|JOIN)\s+(dev\.\w+)(?!\s+WITH)'
+            optimized = re.sub(
+                table_pattern,
+                r'\1 \2 WITH (NOLOCK)',
+                optimized,
+                flags=re.IGNORECASE
+            )
+        # Placeholder for index hints, if index info available
+        return optimized

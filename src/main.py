@@ -84,13 +84,12 @@ class NL2SQLMultiAgentSystem:
             await schema_task
             print("✅ Schema context initialized successfully!")
             
-            # Initialize orchestrator with query cache
+            # Initialize orchestrator
             self.orchestrator_agent = OrchestratorAgent(
                 self.kernel, 
                 self.sql_generator_agent,
                 self.executor_agent, 
-                self.summarizing_agent,
-                self.query_cache
+                self.summarizing_agent
             )
             print("✅ Orchestrator Agent initialized")
             

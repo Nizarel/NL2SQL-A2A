@@ -18,6 +18,7 @@ from .base_agent import BaseAgent
 from .sql_generator_agent import SQLGeneratorAgent
 from .executor_agent import ExecutorAgent
 from .summarizing_agent import SummarizingAgent
+from services.query_cache import QueryCache
 
 
 class OrchestratorAgent(BaseAgent):
@@ -36,6 +37,7 @@ class OrchestratorAgent(BaseAgent):
         self.sql_generator = sql_generator
         self.executor = executor
         self.summarizer = summarizer
+        self.query_cache = QueryCache(ttl_seconds=300, max_size=100)
         
         # Initialize Semantic Kernel AgentGroupChat for orchestration
         self.agent_group_chat: Optional[AgentGroupChat] = None
@@ -105,18 +107,7 @@ class OrchestratorAgent(BaseAgent):
             
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute the sequential multi-agent workflow
-        
-        Args:
-            input_data: Dictionary containing:
-                - question: Natural language question
-                - context: Optional additional context
-                - execute: Whether to execute generated SQL
-                - limit: Row limit for results
-                - include_summary: Whether to generate summary
-                
-        Returns:
-            Dictionary containing complete workflow results
+        Execute the sequential multi-agent workflow with caching
         """
         workflow_start_time = time.time()
         
@@ -132,6 +123,13 @@ class OrchestratorAgent(BaseAgent):
                     success=False,
                     error="No question provided for processing"
                 )
+            
+            # Check cache first
+            if execute:  # Only cache executed queries
+                cached_result = await self.query_cache.get(question, context, execute, limit)
+                if cached_result:
+                    print("📦 Using cached result")
+                    return cached_result
             
             print(f"🎯 Orchestrating workflow for: {question}")
             
@@ -164,6 +162,10 @@ class OrchestratorAgent(BaseAgent):
             result["metadata"]["total_workflow_time"] = round(time.time() - workflow_start_time, 3)
             result["metadata"]["orchestration_pattern"] = "sequential"
             result["metadata"]["workflow_steps"] = self._get_workflow_steps(execute, include_summary)
+            
+            # Cache successful results
+            if result.get("success") and execute:
+                await self.query_cache.set(question, result, context, execute, limit)
             
             return result
             

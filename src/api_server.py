@@ -13,7 +13,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 
 # Add src to path for imports
@@ -22,31 +23,34 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from main import NL2SQLMultiAgentSystem
 
 
-def make_json_serializable(obj):
+def make_json_serializable(obj, max_depth=10):
     """
-    Convert objects to JSON serializable format
+    Convert objects to JSON serializable format with depth and list size limits
     """
-    if hasattr(obj, '__dict__'):
+    if max_depth == 0:
+        return str(obj)
+    
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v, max_depth-1) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        # Limit list size for large results
+        if len(obj) > 1000:
+            return obj[:1000] + [f"... and {len(obj) - 1000} more items"]
+        return [make_json_serializable(item, max_depth-1) for item in obj]
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    elif hasattr(obj, '__dict__'):
         # Convert objects with __dict__ to dictionary
-        return {key: make_json_serializable(value) for key, value in obj.__dict__.items()}
+        return {key: make_json_serializable(value, max_depth-1) for key, value in obj.__dict__.items()}
     elif hasattr(obj, '_asdict'):
         # Handle namedtuples
-        return make_json_serializable(obj._asdict())
-    elif isinstance(obj, dict):
-        # Recursively handle dictionaries
-        return {key: make_json_serializable(value) for key, value in obj.items()}
-    elif isinstance(obj, (list, tuple)):
-        # Recursively handle lists and tuples
-        return [make_json_serializable(item) for item in obj]
+        return make_json_serializable(obj._asdict(), max_depth-1)
     elif hasattr(obj, 'data') and hasattr(obj, 'content'):
         # Handle CallToolResult objects
         return str(obj)
-    elif not isinstance(obj, (str, int, float, bool, type(None))):
+    else:
         # Convert other non-serializable objects to string
         return str(obj)
-    else:
-        # Return serializable objects as-is
-        return obj
 
 
 # Pydantic Models for Request/Response
@@ -121,8 +125,12 @@ app = FastAPI(
     title="NL2SQL Multi-Agent API",
     description="REST API for Natural Language to SQL Multi-Agent System with Semantic Kernel orchestration",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    default_response_class=ORJSONResponse  # Use faster JSON serialization
 )
+
+# Add response compression
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Add CORS middleware
 app.add_middleware(

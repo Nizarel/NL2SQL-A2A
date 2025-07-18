@@ -22,6 +22,7 @@ class SummarizingAgent(BaseAgent):
     def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SummarizingAgent")
         self.templates = {}
+        self._template_cache = {}  # Cache for compiled templates
         self._setup_templates()
         
     def _setup_templates(self):
@@ -137,8 +138,22 @@ class SummarizingAgent(BaseAgent):
                                            formatted_results: Dict[str, Any], 
                                            metadata: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate comprehensive summary of the results using template
+        Generate comprehensive summary with caching
         """
+        # Create a cache key based on result characteristics
+        cache_key = f"{len(formatted_results.get('rows', []))}_{formatted_results.get('status')}"
+        
+        # Skip caching for large results
+        if len(str(formatted_results)) < 10000:  # Only cache small results
+            if cache_key in self._template_cache:
+                # Reuse cached template execution settings
+                template_func = self._template_cache[cache_key]
+            else:
+                template_func = self.templates['comprehensive_summary']
+                self._template_cache[cache_key] = template_func
+        else:
+            template_func = self.templates['comprehensive_summary']
+        
         # Prepare template arguments
         args = KernelArguments(
             question=question,
@@ -148,7 +163,7 @@ class SummarizingAgent(BaseAgent):
         )
         
         # Execute template function
-        response = await self.kernel.invoke(self.templates['comprehensive_summary'], args)
+        response = await self.kernel.invoke(template_func, args)
         response_text = str(response)
         
         # Parse the structured response

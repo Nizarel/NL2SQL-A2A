@@ -6,6 +6,7 @@ python-dotenv
 aiohttp
 httpx
 pydantic
+pydantic-settings
 
 # FastAPI and server dependencies
 fastapi>=0.116.1
@@ -14,3 +15,7 @@ uvicorn[standard]>=0.35.0
 # Optional: for development and testing
 pytest
 pytest-asyncio
+
+# Performance and API optimizations
+orjson>=3.11.0  # Fast JSON serialization
+python-multipart>=0.0.20 # For form data if needed
