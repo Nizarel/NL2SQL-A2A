@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL2SQL Multi-Agent API Portal</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            margin: 10px;
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .btn.secondary {
+            background: linear-gradient(45deg, #11998e, #38ef7d);
+        }
+        .btn.tertiary {
+            background: linear-gradient(45deg, #fc466b, #3f5efb);
+        }
+        .status {
+            margin: 30px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #28a745;
+        }
+        .endpoints {
+            text-align: left;
+            margin: 30px 0;
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .endpoints h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .endpoint {
+            margin: 10px 0;
+            font-family: monospace;
+            background: #e9ecef;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .method {
+            font-weight: bold;
+            color: #007bff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 NL2SQL Multi-Agent API</h1>
+        <p class="subtitle">Natural Language to SQL Multi-Agent System with Semantic Kernel orchestration</p>
+        
+        <div class="status">
+            <strong>🟢 API Server Status:</strong> Running on <code>http://localhost:8000</code>
+        </div>
+
+        <div style="margin: 30px 0;">
+            <a href="http://localhost:8000/docs" class="btn" target="_blank">
+                📚 Swagger UI Documentation
+            </a>
+            <a href="http://localhost:8000/redoc" class="btn secondary" target="_blank">
+                📋 ReDoc Documentation
+            </a>
+            <a href="http://localhost:8000/health" class="btn tertiary" target="_blank">
+                🔍 Health Check
+            </a>
+        </div>
+
+        <div class="endpoints">
+            <h3>🎯 Key API Endpoints:</h3>
+            
+            <div class="endpoint">
+                <span class="method">POST</span> /orchestrator/query - Full NL2SQL workflow
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span> /agents/sql-generator/generate - Generate SQL only
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span> /agents/executor/execute - Execute SQL query
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span> /agents/summarizer/analyze - Analyze data
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span> /database/tables - List database tables
+            </div>
+        </div>
+
+        <div style="margin-top: 30px; font-size: 0.9em; color: #666;">
+            <p><strong>Quick Test:</strong></p>
+            <code style="background: #e9ecef; padding: 8px; border-radius: 4px; display: block; margin: 10px 0;">
+                curl -X POST "http://localhost:8000/orchestrator/query" \<br>
+                -H "Content-Type: application/json" \<br>
+                -d '{"question": "Show top 5 customers by revenue", "limit": 5}'
+            </code>
+        </div>
+    </div>
+
+    <script>
+        // Check API status
+        fetch('/health')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('✅ API is healthy');
+                } else {
+                    console.log('⚠️ API health check failed');
+                }
+            })
+            .catch(error => {
+                console.log('❌ Could not reach API');
+            });
+    </script>
+</body>
+</html>
