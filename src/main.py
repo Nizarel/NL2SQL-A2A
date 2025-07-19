@@ -61,11 +61,21 @@ class NL2SQLMultiAgentSystem:
             # Setup AI service (OpenAI or Azure OpenAI)
             await self._setup_ai_service()
             
-            # Initialize MCP Database Plugin
+            # Initialize Enhanced MCP Database Plugin with Connection Pooling
             mcp_server_url = os.getenv("MCP_SERVER_URL")
             if not mcp_server_url:
                 raise ValueError("MCP_SERVER_URL environment variable is required")
-            self.mcp_plugin = MCPDatabasePlugin(mcp_server_url=mcp_server_url)
+            
+            # Create enhanced plugin with connection pooling
+            self.mcp_plugin = MCPDatabasePlugin(
+                mcp_server_url=mcp_server_url, 
+                enable_pooling=True
+            )
+            
+            # Initialize connection pool
+            print("🔗 Initializing MCP connection pool...")
+            await self.mcp_plugin.initialize()
+            print("✅ MCP connection pool initialized successfully!")
             
             # Add MCP plugin to kernel
             self.kernel.add_plugin(self.mcp_plugin, plugin_name="database")
@@ -337,20 +347,47 @@ class NL2SQLMultiAgentSystem:
             Processed result dictionary
         """
         return await self.ask_question(question, **kwargs)
+    
+    async def cleanup(self):
+        """Cleanup resources and close connections"""
+        try:
+            if hasattr(self, 'mcp_plugin') and self.mcp_plugin:
+                print("🔒 Cleaning up MCP connection pool...")
+                await self.mcp_plugin.close()
+            print("✅ Cleanup completed successfully")
+        except Exception as e:
+            print(f"⚠️ Cleanup error: {e}")
+    
+    def get_connection_pool_metrics(self):
+        """Get connection pool performance metrics"""
+        if hasattr(self, 'mcp_plugin') and self.mcp_plugin:
+            return self.mcp_plugin.get_pool_metrics()
+        return None
+    
+    def print_connection_pool_metrics(self):
+        """Print connection pool performance metrics"""
+        if hasattr(self, 'mcp_plugin') and self.mcp_plugin:
+            self.mcp_plugin.print_pool_metrics()
+        else:
+            print("📊 Connection pool not available")
 
 
 async def main():
     """
-    Production-ready main function for the Multi-Agent NL2SQL System
+    Production-ready main function for the Multi-Agent NL2SQL System with enhanced connection pooling
     """
-    print("🚀 Initializing Multi-Agent NL2SQL System...")
+    print("🚀 Initializing Enhanced Multi-Agent NL2SQL System...")
     
     # Initialize the multi-agent system
     agent = NL2SQLMultiAgentSystem()
     
     try:
         await agent.initialize()
-        print("✅ System ready for processing queries")
+        print("✅ Enhanced system ready for processing queries")
+        
+        # Print initial connection pool metrics
+        print("\n📊 Initial Connection Pool Status:")
+        agent.print_connection_pool_metrics()
         
         # Example usage (can be removed in production)
         # result = await agent.ask_question("Your question here")
@@ -359,12 +396,41 @@ async def main():
         return agent
         
     except Exception as e:
-        print(f"❌ Failed to initialize system: {str(e)}")
+        print(f"❌ Failed to initialize enhanced system: {str(e)}")
+        # Ensure cleanup on failure
+        if agent:
+            await agent.cleanup()
         raise
 
 
 if __name__ == "__main__":
     """
-    Entry point for production deployment
+    Entry point for production deployment with enhanced connection pooling
     """
-    asyncio.run(main())
+    import signal
+    import sys
+    
+    agent_system = None
+    
+    async def shutdown_handler():
+        """Graceful shutdown handler"""
+        if agent_system:
+            print("\n🔒 Gracefully shutting down enhanced system...")
+            await agent_system.cleanup()
+        print("👋 Enhanced system shutdown complete")
+        sys.exit(0)
+    
+    # Set up signal handlers for graceful shutdown
+    def signal_handler(signum, frame):
+        print(f"\n⚠️ Received signal {signum}, initiating graceful shutdown...")
+        asyncio.create_task(shutdown_handler())
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        agent_system = asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
+        if agent_system:
+            asyncio.run(agent_system.cleanup())
