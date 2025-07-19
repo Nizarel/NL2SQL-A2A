@@ -62,7 +62,9 @@ class NL2SQLMultiAgentSystem:
             await self._setup_ai_service()
             
             # Initialize MCP Database Plugin
-            mcp_server_url = os.getenv("MCP_SERVER_URL", "https://azsql-fastmcpserv2.jollyfield-479bc951.eastus2.azurecontainerapps.io/mcp/")
+            mcp_server_url = os.getenv("MCP_SERVER_URL")
+            if not mcp_server_url:
+                raise ValueError("MCP_SERVER_URL environment variable is required")
             self.mcp_plugin = MCPDatabasePlugin(mcp_server_url=mcp_server_url)
             
             # Add MCP plugin to kernel
@@ -106,7 +108,8 @@ class NL2SQLMultiAgentSystem:
             
             # Run agent initializations in parallel using ThreadPoolExecutor
             # Since all agent constructors are synchronous, we use ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="AgentInit") as executor:
+            max_workers = int(os.getenv("AGENT_INIT_MAX_WORKERS", "4"))
+            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="AgentInit") as executor:
                 loop = asyncio.get_event_loop()
                 
                 # Submit all agent initializations concurrently
@@ -228,8 +231,8 @@ class NL2SQLMultiAgentSystem:
         
         raise ValueError("No AI service configuration found. Please set up either Azure OpenAI or OpenAI credentials in .env file")
     
-    async def ask_question(self, question: str, execute: bool = True, limit: int = 100, 
-                          include_summary: bool = True, context: str = "") -> dict:
+    async def ask_question(self, question: str, execute: bool = True, 
+                          limit: int = None, include_summary: bool = True, context: str = "") -> dict:
         """
         Process a natural language question using the multi-agent system
         
@@ -248,6 +251,10 @@ class NL2SQLMultiAgentSystem:
         
         print(f"\n🤔 Question: {question}")
         print("🔄 Starting multi-agent workflow...")
+        
+        # Set default limit from environment variable if not provided
+        if limit is None:
+            limit = int(os.getenv("DEFAULT_QUERY_LIMIT", "100"))
         
         # Use orchestrator to coordinate the workflow
         result = await self.orchestrator_agent.process({
