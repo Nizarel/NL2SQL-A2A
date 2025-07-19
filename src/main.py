@@ -8,6 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion, AzureTextEmbedding
@@ -75,29 +76,79 @@ class NL2SQLMultiAgentSystem:
             schema_context = await self.schema_service.initialize_schema_context()
             print("✅ Schema context initialized successfully!")
             
-            # Initialize specialized agents
-            print("🤖 Initializing specialized agents...")
+            # Initialize specialized agents in parallel for better performance
+            print("🤖 Initializing specialized agents in parallel...")
             
-            # SQL Generator Agent (no longer needs schema_service - orchestrator provides context)
-            self.sql_generator_agent = SQLGeneratorAgent(self.kernel)
-            print("✅ SQL Generator Agent initialized")
+            # Define agent initialization functions
+            def init_sql_generator():
+                """Initialize SQL Generator Agent"""
+                agent = SQLGeneratorAgent(self.kernel)
+                print("✅ SQL Generator Agent initialized")
+                return agent
+                
+            def init_executor():
+                """Initialize Executor Agent"""
+                agent = ExecutorAgent(self.kernel, self.mcp_plugin)
+                print("✅ Executor Agent initialized")
+                return agent
+                
+            def init_summarizer():
+                """Initialize Summarizing Agent"""
+                agent = SummarizingAgent(self.kernel)
+                print("✅ Summarizing Agent initialized")
+                return agent
+                
+            def init_schema_analyst():
+                """Initialize Schema Analyst Agent"""
+                agent = SchemaAnalystAgent(self.kernel, self.schema_service)
+                print("✅ Schema Analyst Agent initialized")
+                return agent
             
-            # Executor Agent  
-            self.executor_agent = ExecutorAgent(self.kernel, self.mcp_plugin)
-            print("✅ Executor Agent initialized")
+            # Run agent initializations in parallel using ThreadPoolExecutor
+            # Since all agent constructors are synchronous, we use ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="AgentInit") as executor:
+                loop = asyncio.get_event_loop()
+                
+                # Submit all agent initializations concurrently
+                print("🚀 Starting parallel agent initialization...")
+                futures = [
+                    loop.run_in_executor(executor, init_sql_generator),
+                    loop.run_in_executor(executor, init_executor),
+                    loop.run_in_executor(executor, init_summarizer),
+                    loop.run_in_executor(executor, init_schema_analyst)
+                ]
+                
+                # Wait for all agents to initialize concurrently
+                try:
+                    results = await asyncio.gather(*futures)
+                    
+                    # Assign results in the order they were submitted
+                    self.sql_generator_agent = results[0]
+                    self.executor_agent = results[1]
+                    self.summarizing_agent = results[2]
+                    self.schema_analyst_agent = results[3]
+                    
+                    print("✅ All specialized agents initialized successfully in parallel!")
+                    
+                except Exception as init_error:
+                    print(f"❌ Parallel agent initialization failed: {str(init_error)}")
+                    # Fallback to sequential initialization
+                    print("⚠️ Falling back to sequential agent initialization...")
+                    
+                    self.sql_generator_agent = SQLGeneratorAgent(self.kernel)
+                    print("✅ SQL Generator Agent initialized (fallback)")
+                    
+                    self.executor_agent = ExecutorAgent(self.kernel, self.mcp_plugin)
+                    print("✅ Executor Agent initialized (fallback)")
+                    
+                    self.summarizing_agent = SummarizingAgent(self.kernel)
+                    print("✅ Summarizing Agent initialized (fallback)")
+                    
+                    self.schema_analyst_agent = SchemaAnalystAgent(self.kernel, self.schema_service)
+                    print("✅ Schema Analyst Agent initialized (fallback)")
             
-            # Summarizing Agent
-            self.summarizing_agent = SummarizingAgent(self.kernel)
-            print("✅ Summarizing Agent initialized")
-            
-            # Schema Analyst Agent (NEW)
-            self.schema_analyst_agent = SchemaAnalystAgent(
-                self.kernel, 
-                self.schema_service
-            )
-            print("✅ Schema Analyst Agent initialized")
-            
-            # Orchestrator Agent with Schema Analyst integration
+            # Initialize Orchestrator Agent (must be last as it depends on all others)
+            print("🎯 Initializing Orchestrator Agent...")
             self.orchestrator_agent = OrchestratorAgent(
                 self.kernel,
                 self.schema_analyst_agent,  # NEW: Pass Schema Analyst first
