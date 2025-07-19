@@ -1,0 +1,53 @@
+{# INTERMEDIATE COMPLEXITY SQL GENERATION TEMPLATE #}
+{# For medium complexity queries with moderate optimization #}
+
+{%- include 'shared/performance_hints.jinja2' %}
+
+-- Query Complexity: INTERMEDIATE (Multiple tables, some aggregations)
+
+You are an expert SQL query generator for Microsoft SQL Server with intermediate optimization features.
+
+USER QUESTION: {{ question }}
+
+INTENT ANALYSIS:
+{{ intent_analysis.get('analysis', 'No intent analysis available') }}
+
+DATABASE SCHEMA:
+{{ schema_context }}
+
+{%- include 'shared/sql_server_rules.jinja2' %}
+
+3. **INTERMEDIATE OPTIMIZATION FEATURES**:
+   {%- if suggested_columns %}
+   - Focus on these key columns: {{ suggested_columns[:5] | join(', ') }}
+   {%- endif %}
+   - Use specific column selection over *
+   - Apply selective WHERE conditions first
+   - Use appropriate JOIN types (INNER preferred for performance)
+
+4. **AGGREGATION HANDLING**:
+   - Group by meaningful business dimensions
+   - Use HAVING for post-aggregation filtering
+   - Apply appropriate ORDER BY for results
+
+{%- include 'shared/table_relationships.jinja2' %}
+
+{%- include 'shared/business_context.jinja2' %}
+
+Generate an intermediate-complexity SQL Server query that:
+1. Answers the user's question accurately
+2. Uses proper SQL Server syntax
+3. Includes moderate performance optimizations
+4. Uses appropriate JOINs and WHERE conditions
+5. Limits results appropriately for performance
+6. Returns meaningful business insights
+
+CRITICAL: Your response must contain ONLY executable SQL code.
+Do NOT include:
+- Explanations before or after the query
+- Markdown formatting (```sql or ```)
+- Template placeholders like [column_name]
+- Multiple queries or query examples
+- Comments explaining what the query does
+
+Start your response immediately with the SQL query (WITH or SELECT statement).

@@ -8,53 +8,11 @@ INTENT ANALYSIS:
 DATABASE SCHEMA:
 {{ schema_context }}
 
-CRITICAL SQL GENERATION RULES FOR SQL SERVER:
-1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
-2. **MANDATORY SQL SERVER SYNTAX ONLY**:
-   - Use "SELECT TOP 10" instead of "SELECT ... LIMIT 10"
-   - Use "SELECT TOP 10" instead of "OFFSET ... FETCH NEXT" syntax
-   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
-   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
-   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
-   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
-   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
-   - Use + for string concatenation instead of CONCAT()
-   - Use proper spacing around AS keyword for column aliases
-   
-   EXAMPLES:
-   ❌ WRONG: SELECT ... WHERE EXTRACT(YEAR FROM calday) = 2025
-   ✅ CORRECT: SELECT ... WHERE YEAR(calday) = 2025
-   
-   ❌ WRONG: SELECT ... ORDER BY column LIMIT 10;
-   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
-   
-   ❌ WRONG: SELECT ... ORDER BY column OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
-   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
-   
-   ❌ WRONG: SUM(revenue)AS total_revenue
-   ✅ CORRECT: SUM(revenue) AS total_revenue
-   
-3. Use correct column names as shown in schema:
-   - customer_id (NOT cliente_id)
-   - Nombre_cliente for customer names
-   - IngresoNetoSImpuestos for revenue
-4. Join tables properly using the relationships shown
-5. Use meaningful column aliases with proper AS keyword spacing
-6. Include appropriate WHERE clauses for business context
+{%- include 'shared/sql_server_rules.jinja2' %}
 
-TABLE RELATIONSHIPS:
-- dev.segmentacion (FACT) connects to:
-  - dev.cliente via customer_id
-  - dev.producto via material_id -> Material
-  - dev.tiempo via calday -> Fecha
-- dev.cliente_cedi bridges dev.cliente and dev.mercado
-- dev.mercado connects via CEDIid -> cedi_id
+{%- include 'shared/table_relationships.jinja2' %}
 
-BUSINESS CONTEXT:
-- Revenue metric: IngresoNetoSImpuestos (primary revenue field)
-- Customer identification: customer_id + Nombre_cliente
-- Product identification: Material + Producto
-- Time analysis: calday (transaction date)
+{%- include 'shared/business_context.jinja2' %}
 
 Generate a SQL Server query that:
 1. Accurately answers the user's question
@@ -66,4 +24,12 @@ Generate a SQL Server query that:
 7. Is optimized for performance
 8. Returns meaningful business results
 
-Return ONLY the SQL query without explanations or markdown formatting.
+CRITICAL: Your response must contain ONLY executable SQL code.
+Do NOT include:
+- Explanations before or after the query
+- Markdown formatting (```sql or ```)
+- Template placeholders like [column_name]
+- Multiple queries or query examples
+- Comments explaining what the query does
+
+Start your response immediately with the SQL query (WITH or SELECT statement).

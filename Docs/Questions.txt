@@ -1,0 +1,53 @@
+•	What are the best-selling products (by Material or Product), both in volume and value?
+•	How do the sales of returnable vs. non-returnable products (Retornabilidad) compare?
+•	What is the profitability (margin or profit) by channel, zone, or product category?
+•	Which product or category has generated the highest profit in the last quarter for each CEDI?
+•	Is there variation in the average selling price per material over the months by zone?
+•	How have promotions impacted the zone, product, and customer type in sales volume?
+•	What is the number of active routes in each CEDI and what is the average volume handled by each route?
+•	What are the 10 territories with the highest number of billable customers served and the top 5 products sold in each of those territories?
+•	Which CEDI has the highest dispatch volume?
+•	How does performance (sales, coverage) vary between different CEDIs?
+•	How has the adoption of a new product been in terms of volumes sold and how many customers have purchased it?
+•	How many new customers have started buying a specific product since its launch?
+•	From historical sales information, what sales forecast is projected for the next month or quarter for each CEDI and Product?
+•	Which products show more marked seasonal trends and what is the inventory recommendation?
+•	What is the brand penetration in each subterritory or region compared to the competition (if captured)?
+•	What percentage of customers regularly buy a set of key products (e.g., a certain package of SKUs)?
+•	How many customers have decreased their purchase frequency in recent weeks and might be considered at risk of loss and what are their frequent products?
+•	What percentage of routes are meeting established delivery times?
+•	How does the average purchase ticket vary among customers from different channels (e.g., supermarkets vs. small stores) in each zone?
+•	What customer segment is most profitable for each product and why?
+•	Which routes and customers have met or exceeded their volume and value targets?
+•	Are there areas where the sales force might need reinforcement to improve coverage?
+•	Which products have the highest turnover (highest daily or weekly sales) and require more stock in the warehouse for each CEDI?
+•	At what times of the month is the highest demand concentrated for each customer and product, and how does it impact inventory levels?
+•	What is the return or returned product rate for each CEDI (if recorded) by category or material?
+•	How do returns affect the overall profitability of a CEDI for each product?
+•	Who are the key customers (Cuenta_clave) that concentrate most of the sales and how have their purchases varied?
+•	Are there billable customers who have recently stopped buying and merit a follow-up visit or call?
+•	What is the coverage percentage (points of sale served vs. potential points of sale) in each zone?
+•	Which customers have not received visits or orders in the last period despite being active?
+•	How close are actual sales to the forecasts (forecast) in a specific period for the top 5 products in each zone?
+•	In which zones has demand been overestimated and in which has it been underestimated?
+•	What is the brand share in each category (e.g., carbonated vs. non-carbonated)?
+•	How does promotion effectiveness vary by commercial channel?
+•	Which territories show expansion opportunities, based on low coverage but high potential?
+•	Which products might have greater marketing push according to their historical growth?
+•	What are the different customer segments and how do they differ in purchasing patterns?
+•	Which customer type presents the highest profit margin, what would be the strategy to retain them, and what are their top 5 purchased products?
+•	Which subterritory shows the highest sales growth for a specific product category (e.g., carbonated vs. non-carbonated) and what factors explain it?
+
+
+Examples of Additional Questions Revenue Performance Agent can Handle:
+Currently Supported Through Existing Tools:
+"What's the month-over-month revenue growth for the last 6 months?"
+"Which zones have the highest revenue per customer?"
+"What's the revenue contribution of each product category?"
+"Show me revenue performance by day of week"
+"What's the revenue impact of new product launches?"
+
+Partially Supported (Would Need Tool Enhancement):
+"What's the revenue per sales representative?" (needs sales rep data)
+"How does weather affect revenue patterns?" (needs external data)
+"What's the revenue cannibalization between products?" (needs advanced analysis)

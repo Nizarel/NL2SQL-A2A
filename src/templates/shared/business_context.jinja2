@@ -1,0 +1,22 @@
+{# BUSINESS CONTEXT - SHARED COMPONENT #}
+{# This component defines the business context and key metrics #}
+
+BUSINESS CONTEXT:
+- Primary KPI: IngresoNetoSImpuestos (Revenue - Numeric(18,2))
+- Customer Analytics: customer_id + Nombre_cliente (Text(100))
+- Product Analytics: Material (Key) + Producto (Description)
+- Temporal Analytics: calday (Date) - partition key for performance
+- Geographic Analytics: cedi_id (Regional distribution centers)
+
+KEY BUSINESS METRICS:
+- Revenue metric: IngresoNetoSImpuestos (primary revenue field)
+- Customer identification: customer_id + Nombre_cliente
+- Product identification: Material + Producto
+- Time analysis: calday (transaction date)
+
+{%- if business_context_hints %}
+BUSINESS LOGIC OPTIMIZATION:
+{%- for hint in business_context_hints %}
+- 💼 {{ hint }}
+{%- endfor %}
+{%- endif %}

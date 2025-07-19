@@ -1,0 +1,19 @@
+{# TABLE RELATIONSHIPS - SHARED COMPONENT #}
+{# This component defines the database table relationships #}
+
+TABLE RELATIONSHIPS:
+- dev.segmentacion (FACT TABLE)
+  ├── dev.cliente (DIMENSION - customer_id) [1:M]
+  ├── dev.producto (DIMENSION - material_id->Material) [1:M] 
+  └── dev.tiempo (DIMENSION - calday->Fecha) [1:M]
+- dev.cliente_cedi (BRIDGE TABLE)
+  ├── dev.cliente (customer_id) [M:1]
+  └── dev.mercado (CEDIid->cedi_id) [M:1]
+
+RELATIONSHIP DETAILS:
+- dev.segmentacion (FACT) connects to:
+  - dev.cliente via customer_id
+  - dev.producto via material_id -> Material
+  - dev.tiempo via calday -> Fecha
+- dev.cliente_cedi bridges dev.cliente and dev.mercado
+- dev.mercado connects via CEDIid -> cedi_id

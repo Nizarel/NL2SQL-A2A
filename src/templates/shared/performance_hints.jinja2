@@ -1,0 +1,42 @@
+{# PERFORMANCE HINTS - SHARED COMPONENT #}
+{# Dynamic performance hints based on query complexity and optimization context #}
+
+{%- if performance_hints %}
+-- Performance Optimization Guidelines:
+{%- for hint in performance_hints %}
+-- ⚡ {{ hint }}
+{%- endfor %}
+{%- endif %}
+
+{%- if suggested_indexes %}
+-- Recommended Indexes for Optimal Performance:
+{%- for index in suggested_indexes %}
+-- 📊 {{ index }}
+{%- endfor %}
+{%- endif %}
+
+{%- if table_priorities %}
+-- Recommended Table Join Order: {{ table_priorities|join(' -> ') }}
+{%- endif %}
+
+{%- if relationship_hints %}
+RELATIONSHIP OPTIMIZATION HINTS:
+{%- for hint in relationship_hints %}
+- 🔄 {{ hint }}
+{%- endfor %}
+{%- endif %}
+
+{%- if aggregation_hints %}
+AGGREGATION OPTIMIZATION:
+{%- for hint in aggregation_hints %}
+- 📈 {{ hint }}
+{%- endfor %}
+{%- endif %}
+
+{%- if complexity_score is defined %}
+-- Query Complexity Score: {{ "%.2f"|format(complexity_score) }} (0.0=Simple, 1.0=Complex)
+{%- endif %}
+
+{%- if optimization_level %}
+-- Optimization Level: {{ optimization_level }}
+{%- endif %}

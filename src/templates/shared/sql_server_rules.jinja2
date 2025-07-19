@@ -1,0 +1,38 @@
+{# SQL SERVER SYNTAX RULES - SHARED COMPONENT #}
+{# This component contains all SQL Server specific syntax requirements #}
+
+CRITICAL SQL GENERATION RULES FOR SQL SERVER:
+1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
+
+2. **MANDATORY SQL SERVER SYNTAX ONLY**:
+   - Use "SELECT TOP {{ limit if limit and limit <= 10000 else 10 }}" instead of "SELECT ... LIMIT"
+   - Use "SELECT TOP N" instead of "OFFSET ... FETCH NEXT" syntax
+   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
+   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
+   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
+   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
+   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
+   - Use + for string concatenation instead of CONCAT()
+   - Use proper spacing around AS keyword for column aliases
+   
+   EXAMPLES:
+   ❌ WRONG: SELECT ... WHERE EXTRACT(YEAR FROM calday) = 2025
+   ✅ CORRECT: SELECT ... WHERE YEAR(calday) = 2025
+   
+   ❌ WRONG: SELECT ... ORDER BY column LIMIT 10;
+   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
+   
+   ❌ WRONG: SELECT ... ORDER BY column OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
+   ✅ CORRECT: SELECT TOP 10 ... ORDER BY column;
+   
+   ❌ WRONG: SUM(revenue)AS total_revenue
+   ✅ CORRECT: SUM(revenue) AS total_revenue
+
+3. **COLUMN AND TABLE NAMING**:
+   - Use correct column names as shown in schema
+   - customer_id (NOT cliente_id)
+   - Nombre_cliente for customer names
+   - IngresoNetoSImpuestos for revenue
+   - Join tables properly using the relationships shown
+   - Use meaningful column aliases with proper AS keyword spacing
+   - Include appropriate WHERE clauses for business context

@@ -1,10 +1,12 @@
 """
-SQL Generator Agent - Analyzes user intent and generates SQL queries
+Enhanced SQL Generator Agent - Analyzes user intent and generates optimized SQL queries
+with complexity analysis and adaptive templating
 """
 
 import re
 import os
-from typing import Dict, Any
+import hashlib
+from typing import Dict, Any, List
 from semantic_kernel import Kernel
 from semantic_kernel.prompt_template import PromptTemplateConfig
 from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
@@ -15,37 +17,68 @@ from agents.base_agent import BaseAgent
 
 class SQLGeneratorAgent(BaseAgent):
     """
-    Agent responsible for analyzing user intent and generating SQL queries
+    Enhanced SQL Generator Agent with complexity analysis and adaptive templating
+    
+    Features:
+    - Query complexity analysis (0.0 - 1.0 scale)
+    - Adaptive template selection based on complexity
+    - Performance optimization hints
+    - Advanced SQL generation patterns
     """
+    
+    # Template selection thresholds for better performance
+    TEMPLATE_THRESHOLDS = {
+        0.7: "advanced",
+        0.3: "intermediate", 
+        0.2: "enhanced",
+        0.0: "basic"
+    }
     
     def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SQLGeneratorAgent")
+        self.template_functions = {}  # Store multiple template functions
+        self._template_cache = {}  # Cache for loaded templates
         self._setup_templates()
         
     def _setup_templates(self):
         """
-        Setup Jinja2 templates for intent analysis and SQL generation
+        Setup multiple Jinja2 templates for different complexity levels
         """
         # Get the templates directory
         templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
+        
+        # Template files for different complexity levels
+        template_files = {
+            'basic': 'sql_generation.jinja2',
+            'intermediate': 'intermediate_sql_generation.jinja2', 
+            'advanced': 'advanced_sql_generation.jinja2',
+            'enhanced': 'enhanced_sql_generation.jinja2'
+        }
         
         try:
             # Load intent analysis template
             intent_template_path = os.path.join(templates_dir, 'intent_analysis.jinja2')
             with open(intent_template_path, 'r', encoding='utf-8') as f:
                 intent_template_content = f.read()
-            
-            # Load SQL generation template
-            sql_template_path = os.path.join(templates_dir, 'sql_generation.jinja2')
-            with open(sql_template_path, 'r', encoding='utf-8') as f:
-                sql_template_content = f.read()
+                
+            # Load all SQL generation templates
+            sql_templates = {}
+            for level, filename in template_files.items():
+                template_path = os.path.join(templates_dir, filename)
+                try:
+                    with open(template_path, 'r', encoding='utf-8') as f:
+                        sql_templates[level] = f.read()
+                except FileNotFoundError:
+                    print(f"⚠️ Template {filename} not found, using basic template as fallback")
+                    if 'basic' in sql_templates:
+                        sql_templates[level] = sql_templates['basic']
                 
         except FileNotFoundError as e:
-            raise FileNotFoundError(f"Template file not found: {e}. Please ensure template files exist in {templates_dir}")
+            raise FileNotFoundError(f"Core template file not found: {e}. Please ensure template files exist in {templates_dir}")
         except Exception as e:
             raise Exception(f"Error loading template files: {e}")
         
-        # Create prompt template configs
+        # Create intent analysis function
         intent_config = PromptTemplateConfig(
             template=intent_template_content,
             name="intent_analysis",
@@ -58,42 +91,43 @@ class SQLGeneratorAgent(BaseAgent):
             }
         )
         
-        sql_config = PromptTemplateConfig(
-            template=sql_template_content,
-            name="sql_generation", 
-            template_format="jinja2",
-            execution_settings={
-                "default": PromptExecutionSettings(
-                    max_tokens=800,
-                    temperature=0.1
-                )
-            }
-        )
-        
-        # Create kernel functions from templates
         self.intent_analysis_function = KernelFunctionFromPrompt(
             function_name="analyze_intent",
             prompt_template_config=intent_config
         )
         
-        self.sql_generation_function = KernelFunctionFromPrompt(
-            function_name="generate_sql",
-            prompt_template_config=sql_config
-        )
+        # Create SQL generation functions for each complexity level
+        for level, template_content in sql_templates.items():
+            sql_config = PromptTemplateConfig(
+                template=template_content,
+                name=f"sql_generation_{level}",
+                template_format="jinja2",
+                execution_settings={
+                    "default": PromptExecutionSettings(
+                        max_tokens=1200 if level in ['advanced', 'enhanced'] else 800,
+                        temperature=0.1
+                    )
+                }
+            )
+            
+            self.template_functions[level] = KernelFunctionFromPrompt(
+                function_name=f"generate_sql_{level}",
+                prompt_template_config=sql_config
+            )
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process user question and generate SQL query
+        Enhanced process method with complexity analysis and adaptive templating
         
         Args:
             input_data: Dictionary containing:
                 - question: User's natural language question
                 - context: Optional additional context
-                - optimized_schema_context: Optimized schema from Schema Analyst (NEW)
-                - schema_analysis: Full schema analysis results (NEW)
+                - optimized_schema_context: Optimized schema from Schema Analyst
+                - schema_analysis: Full schema analysis results
                 
         Returns:
-            Dictionary containing generated SQL query and metadata
+            Dictionary containing generated SQL query, complexity analysis, and metadata
         """
         try:
             question = input_data.get("question", "")
@@ -119,21 +153,44 @@ class SQLGeneratorAgent(BaseAgent):
                     error="No schema context provided. Schema Analyst should provide optimized context."
                 )
             
-            # Analyze user intent (enhanced with schema analysis if available)
+            # STEP 1: Analyze query complexity
+            complexity_analysis = self._analyze_query_complexity(question)
+            complexity_score = complexity_analysis["complexity_score"]
+            
+            print(f"🔍 Query complexity score: {complexity_score:.2f} ({complexity_analysis['complexity_level']})")
+            
+            # STEP 2: Select appropriate template based on complexity
+            template_choice = self._select_template_by_complexity(complexity_score)
+            
+            print(f"📋 Selected template: {template_choice}")
+            
+            # STEP 3: Generate performance hints and optimization context
+            optimization_context = self._generate_optimization_context(
+                complexity_analysis, schema_analysis, question
+            )
+            
+            # STEP 4: Analyze user intent (enhanced with complexity context)
             intent_analysis = await self._analyze_intent(question, context, schema_analysis)
             
-            # Generate SQL query with optimized context
-            sql_query = await self._generate_sql(question, schema_context, intent_analysis, schema_analysis)
+            # STEP 5: Generate SQL query with adaptive template and optimization context
+            sql_query = await self._generate_sql_with_complexity(
+                question, schema_context, intent_analysis, 
+                schema_analysis, complexity_analysis, optimization_context, template_choice
+            )
             
-            # Clean and validate SQL
+            # STEP 6: Clean and validate SQL
             cleaned_sql = self._clean_sql_query(sql_query)
             
-            # Prepare metadata
+            # STEP 7: Prepare enhanced metadata
             metadata = {
                 "schema_tables_used": self._extract_tables_from_sql(cleaned_sql),
                 "query_type": self._determine_query_type(cleaned_sql),
                 "schema_source": schema_source,
-                "schema_context_size": len(schema_context) if schema_context else 0
+                "schema_context_size": len(schema_context) if schema_context else 0,
+                "template_used": template_choice,
+                "complexity_score": complexity_score,
+                "complexity_level": complexity_analysis['complexity_level'],
+                "optimization_hints_applied": len(optimization_context.get('performance_hints', []))
             }
             
             # Add schema analysis metadata if available
@@ -150,6 +207,8 @@ class SQLGeneratorAgent(BaseAgent):
                 data={
                     "sql_query": cleaned_sql,
                     "intent_analysis": intent_analysis,
+                    "complexity_analysis": complexity_analysis,
+                    "optimization_context": optimization_context,
                     "question": question
                 },
                 metadata=metadata
@@ -158,9 +217,387 @@ class SQLGeneratorAgent(BaseAgent):
         except Exception as e:
             return self._create_result(
                 success=False,
-                error=f"SQL generation failed: {str(e)}"
+                error=f"Enhanced SQL generation failed: {str(e)}"
             )
     
+    def _analyze_query_complexity(self, question: str) -> Dict[str, Any]:
+        """
+        Analyze query complexity based on various indicators using optimized pattern groups
+        
+        Returns complexity score (0.0 - 1.0) and detailed analysis
+        """
+        # Grouped complexity indicators for better performance
+        complexity_pattern_groups = {
+            'join_indicators': {
+                'patterns': [
+                    r'\b(join|joins|joining|combine|merge|connect)\b',
+                    r'\b(multiple tables|several tables|across tables)\b',
+                    r'\b(left join|right join|outer join|inner join)\b'
+                ],
+                'weight': 0.4
+            },
+            'aggregation_indicators': {
+                'patterns': [
+                    r'\b(group by|grouping|aggregate|sum|count|average|min|max|total)\b',
+                    r'\b(having|group having)\b'
+                ],
+                'weight': 0.35
+            },
+            'advanced_patterns': {
+                'patterns': [
+                    r'\b(subquery|nested|sub-query|within|inside)\b',
+                    r'\b(window function|partition|over|rank|row_number)\b',
+                    r'\b(cte|common table|recursive)\b'
+                ],
+                'weight': 0.5
+            },
+            'analytical_functions': {
+                'patterns': [
+                    r'\b(top|bottom|rank|percentile|quartile|best|worst|highest|lowest)\b',
+                    r'\b(trend|analysis|analytics|compare|comparison)\b',
+                    r'\b(year over year|month over month|time series)\b'
+                ],
+                'weight': 0.35
+            },
+            'complexity_modifiers': {
+                'patterns': [
+                    r'\b(multiple|several|various|different|distinct)\b',
+                    r'\b(complex|complicated|advanced)\b',
+                    r'\b(all|everything|entire|complete|full)\b',
+                    r'\b(detailed|detail|comprehensive)\b'
+                ],
+                'weight': 0.25
+            },
+            'temporal_patterns': {
+                'patterns': [
+                    r'\b(last|previous|past|recent|since|between|range)\b',
+                    r'\b(monthly|yearly|quarterly|weekly|daily)\b',
+                    r'\b(months?|years?|days?|weeks?|time period)\b'
+                ],
+                'weight': 0.2
+            },
+            'business_patterns': {
+                'patterns': [
+                    r'\b(revenue|sales|profit|income|earnings)\b',
+                    r'\b(customer|client|product|category|region|market)\b',
+                    r'\b(by\s+\w+|per\s+\w+|for\s+each)\b'
+                ],
+                'weight': 0.15
+            }
+        }
+        
+        # Calculate base complexity score
+        score = 0.0
+        matched_patterns = []
+        question_lower = question.lower()
+        
+        # Process pattern groups efficiently
+        for group_name, group_data in complexity_pattern_groups.items():
+            group_match = False
+            for pattern in group_data['patterns']:
+                if re.search(pattern, question_lower):
+                    if not group_match:  # Only count once per group to avoid over-scoring
+                        score += group_data['weight']
+                        group_match = True
+                    matched_patterns.append(f"{group_name}:{pattern.split('|')[0].replace('\\b', '').replace('(', '')}")
+                    
+        # Additional complexity factors
+        word_count = len(question.split())
+        if word_count > 15:
+            score += 0.1
+        if word_count > 25:
+            score += 0.15
+        if word_count > 35:
+            score += 0.2
+        
+        # Question structure complexity
+        question_complexity = question.count('?') + question.count(',') * 0.1
+        score += min(question_complexity, 0.3)
+        
+        # Combination bonuses
+        if any('aggregation' in pattern for pattern in matched_patterns) and \
+           any('temporal' in pattern for pattern in matched_patterns):
+            score += 0.2  # Time-based aggregation bonus
+        
+        if any('analytical' in pattern for pattern in matched_patterns) and \
+           any('business' in pattern for pattern in matched_patterns):
+            score += 0.15  # Business analytics bonus
+        
+        # Cap the score at 1.0
+        score = min(score, 1.0)
+        
+        # Determine complexity level with adjusted thresholds
+        if score >= 0.7:
+            complexity_level = "HIGH"
+            estimated_tables = "3+"
+            estimated_joins = "2+"
+        elif score >= 0.3:
+            complexity_level = "MEDIUM"
+            estimated_tables = "2-3"
+            estimated_joins = "1-2"
+        else:
+            complexity_level = "LOW"
+            estimated_tables = "1-2"
+            estimated_joins = "0-1"
+        
+        # Detailed analysis with optimized pattern checking
+        analysis = {
+            "complexity_score": score,
+            "complexity_level": complexity_level,
+            "matched_patterns": matched_patterns[:5],  # Top 5 patterns
+            "word_count": word_count,
+            "estimated_tables_needed": estimated_tables,
+            "estimated_joins_needed": estimated_joins,
+            "requires_aggregation": any('aggregation' in pattern for pattern in matched_patterns),
+            "requires_time_analysis": any('temporal' in pattern for pattern in matched_patterns),
+            "requires_ranking": any('analytical' in pattern for pattern in matched_patterns)
+        }
+        
+        return analysis
+    
+    def _select_template_by_complexity(self, complexity_score: float) -> str:
+        """
+        Select appropriate template based on complexity score using optimized thresholds
+        """
+        for threshold, template in self.TEMPLATE_THRESHOLDS.items():
+            if complexity_score >= threshold:
+                return template if template in self.template_functions else "basic"
+        return "basic"
+    
+    def _generate_optimization_context(self, complexity_analysis: Dict[str, Any], 
+                                     schema_analysis: Dict[str, Any] = None,
+                                     question: str = "") -> Dict[str, Any]:
+        """
+        Generate optimization context based on complexity with conditional processing for performance
+        """
+        complexity_score = complexity_analysis["complexity_score"]
+        complexity_level = complexity_analysis["complexity_level"]
+        
+        # For very simple queries, return basic context to avoid overhead
+        if complexity_score < 0.2:
+            return self._generate_basic_context(complexity_analysis)
+        
+        # For medium complexity, generate moderate context
+        elif complexity_score < 0.7:
+            return self._generate_medium_context(complexity_analysis, schema_analysis, question)
+        
+        # For high complexity, generate full advanced context
+        else:
+            return self._generate_advanced_context(complexity_analysis, schema_analysis, question)
+    
+    def _generate_basic_context(self, complexity_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate basic optimization context for simple queries"""
+        return {
+            "optimization_level": "basic",
+            "performance_hints": ["Use appropriate indexes", "Keep query simple"],
+            "suggested_columns": [],
+            "table_priorities": [],
+            "join_strategy": "standard",
+            "aggregation_hints": [],
+            "relationship_hints": [],
+            "business_context_hints": []
+        }
+    
+    def _generate_medium_context(self, complexity_analysis: Dict[str, Any], 
+                               schema_analysis: Dict[str, Any] = None,
+                               question: str = "") -> Dict[str, Any]:
+        """Generate medium optimization context for moderately complex queries"""
+        optimization_context = {
+            "optimization_level": "medium",
+            "performance_hints": [],
+            "suggested_columns": [],
+            "table_priorities": [],
+            "join_strategy": "standard",
+            "aggregation_hints": [],
+            "relationship_hints": [],
+            "business_context_hints": []
+        }
+        
+        # Add performance hints based on specific needs
+        hints = []
+        
+        if complexity_analysis.get("requires_aggregation"):
+            hints.append("Use appropriate indexes on GROUP BY columns")
+            optimization_context["aggregation_hints"].append("Apply GROUP BY on indexed columns")
+        
+        if complexity_analysis.get("requires_time_analysis"):
+            hints.append("Optimize date range queries with proper indexing")
+        
+        if complexity_analysis.get("estimated_joins_needed", 0) > 0:
+            hints.append("Use INNER JOIN when possible for better performance")
+            optimization_context["join_strategy"] = "optimized_order"
+        
+        optimization_context["performance_hints"] = hints
+        
+        # Add basic schema analysis context if available
+        if schema_analysis:
+            relevant_tables = schema_analysis.get("relevant_tables", [])[:3]  # Limit to 3 tables
+            if relevant_tables:
+                optimization_context["table_priorities"] = relevant_tables
+        
+        self._add_business_context_hints(optimization_context, question)
+        
+        return optimization_context
+    
+    def _generate_advanced_context(self, complexity_analysis: Dict[str, Any], 
+                                 schema_analysis: Dict[str, Any] = None,
+                                 question: str = "") -> Dict[str, Any]:
+        """Generate comprehensive optimization context for complex queries"""
+        optimization_context = {
+            "optimization_level": "high",
+            "performance_hints": [],
+            "suggested_columns": [],
+            "table_priorities": [],
+            "join_strategy": "optimized_order",
+            "aggregation_hints": [],
+            "relationship_hints": [],
+            "business_context_hints": []
+        }
+        
+        # Generate comprehensive performance hints
+        hints = []
+        
+        if complexity_analysis.get("requires_aggregation"):
+            hints.extend([
+                "Use appropriate indexes on GROUP BY columns",
+                "Consider using aggregate functions efficiently"
+            ])
+            optimization_context["aggregation_hints"].extend([
+                "Apply GROUP BY on indexed columns",
+                "Use HAVING clause for post-aggregation filtering"
+            ])
+        
+        if complexity_analysis.get("requires_time_analysis"):
+            hints.extend([
+                "Optimize date range queries with proper indexing",
+                "Use YEAR(), MONTH(), DAY() functions for date filtering"
+            ])
+            
+        if complexity_analysis.get("requires_ranking"):
+            hints.extend([
+                "Use ROW_NUMBER() with PARTITION BY for efficient ranking",
+                "Consider TOP clause instead of complex ranking when possible"
+            ])
+        
+        if complexity_analysis.get("estimated_joins_needed", 0) > 1:
+            hints.extend([
+                "Optimize join order: most selective table first",
+                "Use INNER JOIN when possible for better performance"
+            ])
+        
+        # Add advanced optimization hints
+        hints.extend([
+            "Consider using CTE for better readability and performance",
+            "Apply table hints (NOLOCK) for analytical queries",
+            "Use query compilation hints for complex queries"
+        ])
+        
+        optimization_context["performance_hints"] = hints
+        
+        # Extract comprehensive optimization hints from schema analysis
+        if schema_analysis:
+            relevant_tables = schema_analysis.get("relevant_tables", [])
+            if relevant_tables:
+                optimization_context["table_priorities"] = relevant_tables[:5]  # Top 5 tables
+            
+            if schema_analysis.get("performance_hints"):
+                optimization_context["performance_hints"].extend(
+                    schema_analysis["performance_hints"][:3]  # Add top 3 schema hints
+                )
+            
+            # Extract suggested columns from schema analysis
+            key_metrics = schema_analysis.get("key_metrics", [])
+            if key_metrics:
+                optimization_context["suggested_columns"] = key_metrics[:10]  # Top 10 columns
+        
+        self._add_business_context_hints(optimization_context, question)
+        
+        return optimization_context
+    
+    def _add_business_context_hints(self, optimization_context: Dict[str, Any], question: str):
+        """Add business context hints based on question patterns"""
+        question_lower = question.lower()
+        business_hints = []
+        
+        if "revenue" in question_lower or "sales" in question_lower:
+            business_hints.append("Focus on IngresoNetoSImpuestos as primary revenue metric")
+        
+        if "customer" in question_lower or "client" in question_lower:
+            business_hints.append("Use customer_id + Nombre_cliente for customer identification")
+        
+        if "product" in question_lower or "item" in question_lower:
+            business_hints.append("Use Material + Producto for complete product information")
+        
+        optimization_context["business_context_hints"] = business_hints
+    
+    async def _generate_sql_with_complexity(self, question: str, schema_context: str, 
+                                          intent_analysis: Dict[str, Any],
+                                          schema_analysis: Dict[str, Any] = None,
+                                          complexity_analysis: Dict[str, Any] = None,
+                                          optimization_context: Dict[str, Any] = None,
+                                          template_choice: str = "basic") -> str:
+        """
+        Generate SQL query using complexity-aware template with optimization context
+        """
+        try:
+            # Create kernel arguments for the enhanced template
+            from semantic_kernel.functions import KernelArguments
+            
+            # Base arguments
+            arguments = KernelArguments(
+                question=question,
+                schema_context=schema_context,
+                intent_analysis=intent_analysis
+            )
+            
+            # Add complexity analysis context
+            if complexity_analysis:
+                arguments["complexity_analysis"] = complexity_analysis
+                arguments["complexity_score"] = complexity_analysis["complexity_score"]
+            
+            # Add optimization context
+            if optimization_context:
+                arguments["optimization_level"] = optimization_context.get("optimization_level", "medium")
+                arguments["performance_hints"] = optimization_context.get("performance_hints", [])
+                arguments["suggested_columns"] = optimization_context.get("suggested_columns", [])
+                arguments["table_priorities"] = optimization_context.get("table_priorities", [])
+                arguments["join_strategy"] = optimization_context.get("join_strategy", "standard")
+                arguments["aggregation_hints"] = optimization_context.get("aggregation_hints", [])
+                arguments["relationship_hints"] = optimization_context.get("relationship_hints", [])
+                arguments["business_context_hints"] = optimization_context.get("business_context_hints", [])
+            
+            # Add schema analysis context for enhanced SQL generation
+            if schema_analysis:
+                arguments["relevant_tables"] = schema_analysis.get("relevant_tables", [])
+                arguments["optimized_schema_context"] = schema_analysis.get("optimized_context", "")
+                arguments["key_metrics"] = schema_analysis.get("key_metrics", [])
+            
+            # Add additional template variables for enhanced templates
+            arguments["limit"] = 100  # Default limit
+            arguments["debug_mode"] = False  # Can be made configurable
+            arguments["result_size_warning"] = complexity_analysis.get("complexity_score", 0) > 0.7 if complexity_analysis else False
+            
+            # Select the appropriate template function
+            template_function = self.template_functions.get(template_choice)
+            if not template_function:
+                print(f"⚠️ Template {template_choice} not found, falling back to basic")
+                template_function = self.template_functions.get("basic", self.template_functions.get("enhanced"))
+            
+            if not template_function:
+                raise Exception("No SQL generation template available")
+            
+            # Invoke the selected template function
+            result = await self.kernel.invoke(
+                template_function,
+                arguments
+            )
+            
+            # Return the generated SQL
+            return str(result).strip()
+            
+        except Exception as e:
+            raise Exception(f"Enhanced SQL generation failed: {str(e)}")
+
     async def _analyze_intent(self, question: str, context: str = "", schema_analysis: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Analyze user intent from the question using Jinja2 template
@@ -194,75 +631,56 @@ class SQLGeneratorAgent(BaseAgent):
         except Exception as e:
             return {"analysis": f"Intent analysis failed: {str(e)}"}
     
-    async def _generate_sql(self, question: str, schema_context: str, intent_analysis: Dict[str, Any], 
-                           schema_analysis: Dict[str, Any] = None) -> str:
-        """
-        Generate SQL query based on question and schema context using Jinja2 template
-        Enhanced with schema analysis results for better SQL generation
-        """
-        try:
-            # Create kernel arguments for the template
-            from semantic_kernel.functions import KernelArguments
-            
-            arguments = KernelArguments(
-                question=question,
-                schema_context=schema_context,
-                intent_analysis=intent_analysis
-            )
-            
-            # Add schema analysis context for enhanced SQL generation
-            if schema_analysis:
-                arguments["relevant_tables"] = str(schema_analysis.get("relevant_tables", []))
-                arguments["join_strategy"] = str(schema_analysis.get("join_strategy", {}))
-                arguments["performance_hints"] = str(schema_analysis.get("performance_hints", []))
-                arguments["key_metrics"] = str(schema_analysis.get("key_metrics", []))
-            
-            # Invoke the SQL generation function
-            result = await self.kernel.invoke(
-                self.sql_generation_function,
-                arguments
-            )
-            
-            # Return the generated SQL
-            return str(result).strip()
-            
-        except Exception as e:
-            raise Exception(f"SQL generation failed: {str(e)}")
-    
     def _clean_sql_query(self, sql_query: str) -> str:
         """
-        Clean and validate the generated SQL query
+        Clean and validate the generated SQL query using modular cleaning functions
         """
-        # Remove markdown formatting
+        # Remove markdown formatting first
+        sql_query = self._clean_markdown_formatting(sql_query)
+        
+        # Apply SQL Server specific syntax conversions
+        sql_query = self._clean_sql_syntax(sql_query)
+        sql_query = self._clean_date_functions(sql_query)
+        sql_query = self._clean_limit_clauses(sql_query)
+        sql_query = self._validate_table_prefixes(sql_query)
+        
+        # Final cleanup and validation
+        sql_query = self._final_cleanup(sql_query)
+        
+        return sql_query
+    
+    def _clean_markdown_formatting(self, sql_query: str) -> str:
+        """Remove markdown SQL code block formatting"""
         sql_query = re.sub(r'^```sql\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = sql_query.strip()
         
-        # CRITICAL FIX: Convert multi-line SQL to single-line format for SQL Server compatibility
-        # SQL Server has issues parsing multi-line SQL with newlines, especially around AS keywords
-        # Replace all whitespace sequences (including newlines) with single spaces
+        # Convert multi-line SQL to single-line format for SQL Server compatibility
         sql_query = re.sub(r'\s+', ' ', sql_query)
-        sql_query = sql_query.strip()
+        return sql_query.strip()
+    
+    def _clean_sql_syntax(self, sql_query: str) -> str:
+        """Convert PostgreSQL/MySQL syntax to SQL Server syntax"""
+        # Convert CONCAT function to + operator
+        sql_query = re.sub(r'\bCONCAT\s*\(([^)]+)\)', 
+                          lambda m: m.group(1).replace(',', ' +'), 
+                          sql_query, flags=re.IGNORECASE)
         
+        # Fix column aliases spacing around AS keyword
+        sql_query = re.sub(r'\s+AS\s+', ' AS ', sql_query, flags=re.IGNORECASE)
+        
+        return sql_query
+    
+    def _clean_date_functions(self, sql_query: str) -> str:
+        """Convert date functions to SQL Server format"""
         # Convert PostgreSQL/MySQL INTERVAL syntax to SQL Server DATEADD
-        # Pattern: INTERVAL 'n unit' or INTERVAL n unit
-        # Examples: INTERVAL '12 months', INTERVAL 1 YEAR, etc.
-        
-        # INTERVAL '12 months' -> DATEADD(MONTH, -12, GETDATE())
         interval_patterns = [
-            # INTERVAL 'n months'
             (r"INTERVAL\s+'(\d+)\s+months?'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
             (r"INTERVAL\s+'(\d+)\s+MONTH'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
-            
-            # INTERVAL 'n days'
             (r"INTERVAL\s+'(\d+)\s+days?'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
             (r"INTERVAL\s+'(\d+)\s+DAY'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
-            
-            # INTERVAL 'n years'
             (r"INTERVAL\s+'(\d+)\s+years?'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
             (r"INTERVAL\s+'(\d+)\s+YEAR'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
-            
-            # INTERVAL n MONTH (without quotes)
             (r"INTERVAL\s+(\d+)\s+MONTH", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
             (r"INTERVAL\s+(\d+)\s+DAY", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
             (r"INTERVAL\s+(\d+)\s+YEAR", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
@@ -271,24 +689,20 @@ class SQLGeneratorAgent(BaseAgent):
         for pattern, replacement in interval_patterns:
             sql_query = re.sub(pattern, replacement, sql_query, flags=re.IGNORECASE)
         
-        # Handle more complex INTERVAL expressions with arithmetic
-        # Example: GETDATE() - INTERVAL '12 months' -> DATEADD(MONTH, -12, GETDATE())
+        # Handle complex INTERVAL expressions with arithmetic
         sql_query = re.sub(
             r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+months?'",
             lambda m: f"DATEADD(MONTH, -{m.group(2)}, {m.group(1)})",
-            sql_query,
-            flags=re.IGNORECASE
+            sql_query, flags=re.IGNORECASE
         )
         
         sql_query = re.sub(
             r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+days?'",
             lambda m: f"DATEADD(DAY, -{m.group(2)}, {m.group(1)})",
-            sql_query,
-            flags=re.IGNORECASE
+            sql_query, flags=re.IGNORECASE
         )
         
-        # Convert PostgreSQL/MySQL date functions to SQL Server format
-        # EXTRACT(YEAR FROM date_col) -> YEAR(date_col)
+        # Convert date extraction functions
         sql_query = re.sub(r'\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
         sql_query = re.sub(r'\bEXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
         sql_query = re.sub(r'\bEXTRACT\s*\(\s*DAY\s+FROM\s+([^)]+)\)', r'DAY(\1)', sql_query, flags=re.IGNORECASE)
@@ -297,33 +711,21 @@ class SQLGeneratorAgent(BaseAgent):
         sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'year\'\s*,\s*([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
         sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'month\'\s*,\s*([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
         
-        # Convert NOW() to GETDATE()
+        # Convert current date/time functions
         sql_query = re.sub(r'\bNOW\s*\(\s*\)', 'GETDATE()', sql_query, flags=re.IGNORECASE)
-        
-        # Convert CURRENT_DATE to CAST(GETDATE() AS DATE)
         sql_query = re.sub(r'\bCURRENT_DATE\b', 'CAST(GETDATE() AS DATE)', sql_query, flags=re.IGNORECASE)
         
-        # Fix invalid date arithmetic patterns that might result from conversions
-        # Pattern: (CAST(GETDATE() AS DATE) - DATEADD(...)) -> just DATEADD(...)
+        # Fix invalid date arithmetic patterns
         sql_query = re.sub(
             r'\(\s*CAST\s*\(\s*GETDATE\s*\(\s*\)\s*AS\s+DATE\s*\)\s*-\s*(DATEADD\([^)]+\))\s*\)',
-            r'\1',
-            sql_query,
-            flags=re.IGNORECASE
+            r'\1', sql_query, flags=re.IGNORECASE
         )
         
-        # Also handle simpler cases without parentheses
-        sql_query = re.sub(
-            r'CAST\s*\(\s*GETDATE\s*\(\s*\)\s*AS\s+DATE\s*\)\s*-\s*(DATEADD\([^)]+\))',
-            r'\1',
-            sql_query,
-            flags=re.IGNORECASE
-        )
-        
-        # Convert CONCAT function (PostgreSQL) to + operator (SQL Server)
-        sql_query = re.sub(r'\bCONCAT\s*\(([^)]+)\)', lambda m: m.group(1).replace(',', ' +'), sql_query, flags=re.IGNORECASE)
-        
-        # Convert OFFSET ... FETCH NEXT to TOP for better compatibility
+        return sql_query
+    
+    def _clean_limit_clauses(self, sql_query: str) -> str:
+        """Convert LIMIT and OFFSET...FETCH NEXT to SQL Server TOP clause"""
+        # Convert OFFSET ... FETCH NEXT to TOP
         offset_fetch_pattern = r'\bOFFSET\s+(\d+)\s+ROWS?\s+FETCH\s+NEXT\s+(\d+)\s+ROWS?\s+ONLY\b'
         offset_match = re.search(offset_fetch_pattern, sql_query, re.IGNORECASE)
         
@@ -334,74 +736,57 @@ class SQLGeneratorAgent(BaseAgent):
             # Remove the OFFSET ... FETCH NEXT clause
             sql_query = re.sub(offset_fetch_pattern, '', sql_query, flags=re.IGNORECASE).strip()
             
-            # If offset is 0, just use TOP
             if offset_value == 0:
                 # Add TOP after SELECT
                 sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
             else:
-                # For non-zero offset, we need to use ROW_NUMBER() - more complex but compatible
-                # This is a simplified approach - in practice might need more sophisticated handling
+                # For non-zero offset, use TOP with warning
                 print(f"⚠️ WARNING: OFFSET {offset_value} converted to TOP {fetch_value} (offset ignored for compatibility)")
                 sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
         
-        # Convert LIMIT to TOP for SQL Server compatibility
-        # Handle various LIMIT patterns that might be generated
-        
-        # Pattern 1: "LIMIT n" at the end of query
+        # Convert LIMIT to TOP
         limit_pattern_end = r'\bLIMIT\s+(\d+)\s*;?\s*$'
-        limit_match = re.search(limit_pattern_end, sql_query, re.IGNORECASE)
-        
-        # Pattern 2: "LIMIT n" anywhere in the query (before ORDER BY, etc.)
         limit_pattern_mid = r'\bLIMIT\s+(\d+)\b'
+        
+        limit_match = re.search(limit_pattern_end, sql_query, re.IGNORECASE)
         
         if limit_match:
             limit_value = limit_match.group(1)
-            # Remove the LIMIT clause completely
             sql_query = re.sub(limit_pattern_end, '', sql_query, flags=re.IGNORECASE).strip()
             sql_query = self._add_top_clause_to_query(sql_query, limit_value)
-                
         elif re.search(limit_pattern_mid, sql_query, re.IGNORECASE):
-            # Handle LIMIT in middle of query
             match = re.search(limit_pattern_mid, sql_query, re.IGNORECASE)
             if match:
                 limit_value = match.group(1)
-                # Remove the LIMIT clause
                 sql_query = re.sub(limit_pattern_mid, '', sql_query, flags=re.IGNORECASE).strip()
                 sql_query = self._add_top_clause_to_query(sql_query, limit_value)
         
-        # Fix potential issues with column aliases and AS keyword
-        # Ensure proper spacing around AS keyword
-        sql_query = re.sub(r'\s+AS\s+', ' AS ', sql_query, flags=re.IGNORECASE)
-        
-        # Ensure dev. prefix is used for known tables
-        table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
-        for table in table_names:
-            # Replace FROM table with FROM dev.table (case insensitive)
-            sql_query = re.sub(
-                rf'\bFROM\s+{table}\b',
-                f'FROM dev.{table}',
-                sql_query,
-                flags=re.IGNORECASE
-            )
-            # Replace JOIN table with JOIN dev.table (case insensitive)
-            sql_query = re.sub(
-                rf'\bJOIN\s+{table}\b',
-                f'JOIN dev.{table}',
-                sql_query,
-                flags=re.IGNORECASE
-            )
-        
-        # Ensure proper statement termination
-        if not sql_query.endswith(';'):
-            sql_query += ';'
-        
-        # Final validation: Check if LIMIT still exists and warn
+        # Final validation: Check if LIMIT still exists
         if re.search(r'\bLIMIT\b', sql_query, re.IGNORECASE):
             print(f"⚠️ WARNING: LIMIT syntax still detected in SQL: {sql_query}")
-            # Force conversion for any remaining LIMIT
             sql_query = re.sub(r'\bLIMIT\s+(\d+)\b', '', sql_query, flags=re.IGNORECASE)
             if not re.search(r'\bTOP\s+\d+\b', sql_query, re.IGNORECASE):
                 sql_query = re.sub(r'\bSELECT\b', 'SELECT TOP 10', sql_query, count=1, flags=re.IGNORECASE)
+        
+        return sql_query
+    
+    def _validate_table_prefixes(self, sql_query: str) -> str:
+        """Ensure dev. prefix is used for known tables"""
+        table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
+        
+        for table in table_names:
+            # Replace FROM table with FROM dev.table
+            sql_query = re.sub(rf'\bFROM\s+{table}\b', f'FROM dev.{table}', sql_query, flags=re.IGNORECASE)
+            # Replace JOIN table with JOIN dev.table
+            sql_query = re.sub(rf'\bJOIN\s+{table}\b', f'JOIN dev.{table}', sql_query, flags=re.IGNORECASE)
+        
+        return sql_query
+    
+    def _final_cleanup(self, sql_query: str) -> str:
+        """Final cleanup and validation"""
+        # Ensure proper statement termination
+        if not sql_query.endswith(';'):
+            sql_query += ';'
         
         return sql_query
     

@@ -603,8 +603,8 @@ Each agent should complete their step and pass results to the next agent.
         for i, line in enumerate(lines):
             line = line.strip()
             
-            # Start collecting when we see SELECT
-            if line.upper().startswith('SELECT') or (line.upper().startswith('WITH') and i < len(lines) - 1 and 'SELECT' in lines[i+1].upper()):
+            # Start collecting when we see SELECT or WITH (but don't restart if already collecting)
+            if not in_sql_block and (line.upper().startswith('SELECT') or (line.upper().startswith('WITH') and i < len(lines) - 1 and 'SELECT' in lines[i+1].upper())):
                 in_sql_block = True
                 sql_lines = [line]
                 continue
