@@ -80,16 +80,23 @@ Available tables: cliente, cliente_cedi, mercado, producto, segmentacion, tiempo
             sql_generation_agent = ChatCompletionAgent(
                 kernel=self.kernel,
                 name="SQLGeneratorAgent",
-                instructions="""You are a SQL generation specialist. Your role is to:
+                instructions="""You are a SQL generation specialist. Your ONLY role is to generate SQL code.
+
+WHAT YOU MUST DO:
 1. Generate EXECUTABLE SQL queries using the provided database schema
 2. Use ONLY the exact table names and column names from the schema
 3. Use 'dev.tablename' format for all table references
 4. For revenue queries, use 'IngresoNetoSImpuestos' column from 'segmentacion' table
 5. Return ONLY valid SQL Server syntax - NO placeholders or template variables
-6. Focus on SELECT queries for data retrieval
-7. Use proper JOIN syntax when combining tables
+6. Start your response immediately with the SQL query
 
-CRITICAL: Never use placeholders like [REVENUE_TABLE] or [column_name]. Always use the actual names from the provided schema."""
+WHAT YOU MUST NOT DO:
+- Do NOT execute the query
+- Do NOT return results or data tables
+- Do NOT provide explanations before the SQL
+- Do NOT use placeholders like [REVENUE_TABLE] or [column_name]
+
+"""
             )
             
             query_executor_agent = ChatCompletionAgent(
@@ -212,22 +219,23 @@ SEQUENTIAL NL2SQL WORKFLOW REQUEST:
 
 Question: {params['question']}
 Additional Context: {params.get('context', 'None')}
-Execution Parameters:
-- Execute Query: {params['execute']}
-- Row Limit: {params['limit']} 
-- Include Summary: {params['include_summary']}
 
 DATABASE SCHEMA (Use these exact table and column names):
 {schema_context}
 
-WORKFLOW STEPS (Execute in this exact sequence):
+WORKFLOW INSTRUCTIONS:
 1. SchemaAnalystAgent: Analyze question to identify relevant tables from the schema above
 2. SQLGeneratorAgent: Generate EXECUTABLE SQL query using ONLY the table/column names from the schema above
    - Use dev.tablename format for all tables
    - Use actual column names from the schema (e.g., IngresoNetoSImpuestos for revenue)
    - NO placeholders like [REVENUE_TABLE] or [column_name]
-   - Return valid SQL Server syntax only
-3. ExecutorAgent: Execute the SQL query and return results  
+   - Return ONLY the SQL query code - do not execute it
+   - Use valid SQL Server syntax only
+   - Start your response with the SQL query
+3. ExecutorAgent: Take the SQL from SQLGeneratorAgent and execute it to return results
+4. SummarizingAgent: Analyze results and provide insights
+
+IMPORTANT: Each agent should perform ONLY their designated step. SQLGeneratorAgent must return SQL code, not results.  
 4. SummarizingAgent: Analyze results and provide business insights
 
 Each agent should complete their step and pass results to the next agent.
@@ -299,9 +307,9 @@ Each agent should complete their step and pass results to the next agent.
             
             if not schema_analysis["success"]:
                 print(f"⚠️ Schema analysis failed: {schema_analysis['error']}")
-                # Continue with fallback to full schema
-                optimized_schema_context = self.sql_generator.schema_service.get_full_schema_summary()
-                cache_info = "No cache (analysis failed)"
+                # Continue with fallback to full schema from Schema Analyst
+                optimized_schema_context = self.schema_analyst.schema_service.get_full_schema_summary()
+                cache_info = "No cache (analysis failed - using full schema)"
             else:
                 # Extract optimized schema context
                 analysis_data = schema_analysis["data"]

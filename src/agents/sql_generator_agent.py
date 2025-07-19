@@ -11,7 +11,6 @@ from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecut
 from semantic_kernel.functions import KernelFunctionFromPrompt
 
 from agents.base_agent import BaseAgent
-from services.schema_service import SchemaService
 
 
 class SQLGeneratorAgent(BaseAgent):
@@ -19,9 +18,8 @@ class SQLGeneratorAgent(BaseAgent):
     Agent responsible for analyzing user intent and generating SQL queries
     """
     
-    def __init__(self, kernel: Kernel, schema_service: SchemaService):
+    def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SQLGeneratorAgent")
-        self.schema_service = schema_service
         self._setup_templates()
         
     def _setup_templates(self):
@@ -109,15 +107,17 @@ class SQLGeneratorAgent(BaseAgent):
                     error="No question provided"
                 )
             
-            # Use optimized schema context if provided, otherwise fall back to full schema
+            # Schema context must be provided by orchestrator via optimized_schema_context
             if optimized_schema_context:
                 schema_context = optimized_schema_context
                 schema_source = "optimized"
                 print("🎯 Using optimized schema context from Schema Analyst")
             else:
-                schema_context = self.schema_service.get_full_schema_summary()
-                schema_source = "full"
-                print("⚠️ Using full schema context (no optimization available)")
+                # No fallback - orchestrator should always provide schema context
+                return self._create_result(
+                    success=False,
+                    error="No schema context provided. Schema Analyst should provide optimized context."
+                )
             
             # Analyze user intent (enhanced with schema analysis if available)
             intent_analysis = await self._analyze_intent(question, context, schema_analysis)
@@ -236,6 +236,12 @@ class SQLGeneratorAgent(BaseAgent):
         # Remove markdown formatting
         sql_query = re.sub(r'^```sql\s*', '', sql_query, flags=re.MULTILINE)
         sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
+        sql_query = sql_query.strip()
+        
+        # CRITICAL FIX: Convert multi-line SQL to single-line format for SQL Server compatibility
+        # SQL Server has issues parsing multi-line SQL with newlines, especially around AS keywords
+        # Replace all whitespace sequences (including newlines) with single spaces
+        sql_query = re.sub(r'\s+', ' ', sql_query)
         sql_query = sql_query.strip()
         
         # Convert PostgreSQL/MySQL INTERVAL syntax to SQL Server DATEADD

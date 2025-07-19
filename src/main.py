@@ -78,8 +78,8 @@ class NL2SQLMultiAgentSystem:
             # Initialize specialized agents
             print("🤖 Initializing specialized agents...")
             
-            # SQL Generator Agent
-            self.sql_generator_agent = SQLGeneratorAgent(self.kernel, self.schema_service)
+            # SQL Generator Agent (no longer needs schema_service - orchestrator provides context)
+            self.sql_generator_agent = SQLGeneratorAgent(self.kernel)
             print("✅ SQL Generator Agent initialized")
             
             # Executor Agent  
