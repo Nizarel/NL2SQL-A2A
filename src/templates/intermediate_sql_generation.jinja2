@@ -24,6 +24,8 @@ DATABASE SCHEMA:
 
 {% include 'shared/business_context.jinja2' %}
 
+{% include 'shared/time_rules.jinja2' %}
+
 {%- if business_context_hints %}
 BUSINESS LOGIC OPTIMIZATION:
 {%- for hint in business_context_hints %}

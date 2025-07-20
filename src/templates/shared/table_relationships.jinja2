@@ -9,6 +9,9 @@ TABLE RELATIONSHIPS:
 - dev.cliente_cedi (BRIDGE TABLE)
   ├── dev.cliente (customer_id) [M:1]
   └── dev.mercado (CEDIid->cedi_id) [M:1]
+- dev.CEDI_QVentas_PAIS (TIME DIMENSION)
+  ├── Contains Año (year) and Trimestre (quarter) columns
+  └── Essential for time-based filtering and quarterly analysis
 
 RELATIONSHIP DETAILS:
 - dev.segmentacion (FACT) connects to:
@@ -17,3 +20,10 @@ RELATIONSHIP DETAILS:
   - dev.tiempo via calday -> Fecha
 - dev.cliente_cedi bridges dev.cliente and dev.mercado
 - dev.mercado connects via CEDIid -> cedi_id
+
+TIME PERIOD RELATIONSHIPS:
+- For quarterly analysis requiring "last quarter" data:
+  1. Create QInfo CTE to get MAX(Año) from dev.CEDI_QVentas_PAIS
+  2. Create LastQuarter CTE using INNER JOIN with QInfo to get MAX(Trimestre) for that specific year
+  3. Use INNER JOIN between main data tables and both time period CTEs
+  4. This two-step approach ensures accurate time filtering and reliable data retrieval

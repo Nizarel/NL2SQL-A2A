@@ -1,0 +1,82 @@
+{# TIME ANALYSIS RULES - SHARED COMPONENT #}
+{# This component contains all time-related analysis patterns and rules #}
+
+CRITICAL TIME TABLE INFORMATION:
+- Time dimension table: dev.tiempo (contains Fecha, Year, Q, NumMes, Dia columns)
+- Available years: 2024-2025
+- Available quarters: Q1, Q2, Q3, Q4
+- Current latest quarter with data: 2025 Q2 (as of analysis date)
+- Date column mapping: dev.segmentacion.calday → dev.tiempo.Fecha
+
+MANDATORY TIME FILTERING PATTERNS:
+
+1. LAST QUARTER ANALYSIS PATTERN (ONLY WORKING APPROACH - USE THIS):
+   For questions asking about "last quarter", "latest quarter", or "most recent quarter":
+   
+   WITH LastQuarter AS (
+       SELECT TOP 1 Year, Q 
+       FROM dev.tiempo 
+       ORDER BY Year DESC, Q DESC
+   )
+   
+   *** CRITICAL: Use CROSS JOIN LastQuarter lq and WHERE t.Year = lq.Year AND t.Q = lq.Q ***
+   
+   BROKEN PATTERN (DO NOT USE):
+   WITH LastQuarter AS (
+       SELECT MAX(Year) AS MaxYear, MAX(Q) AS MaxQuarter 
+       FROM dev.tiempo
+   )
+   -- This returns 0 rows because MAX(Q) doesn't give the quarter for the MAX(Year)
+
+2. TIME FILTERING JOIN PATTERN (PROVEN TO WORK):
+   - Use CROSS JOIN with LastQuarter CTE: CROSS JOIN LastQuarter lq
+   - Apply time conditions: WHERE t.Year = lq.Year AND t.Q = lq.Q
+   - NEVER use MaxYear/MaxQuarter variables - they cause 0 row results
+
+3. COMPLETE WORKING EXAMPLE:
+   WITH LastQuarter AS (
+       SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q DESC
+   )
+   SELECT [your columns]
+   FROM dev.segmentacion s
+   INNER JOIN dev.tiempo t ON s.calday = t.Fecha
+   CROSS JOIN LastQuarter lq
+   WHERE t.Year = lq.Year AND t.Q = lq.Q
+
+3. DATE RELATIONSHIP JOINS:
+   - Main fact table: dev.segmentacion (calday column)
+   - Time dimension: dev.tiempo (Fecha column)
+   - Join condition: dev.segmentacion.calday = dev.tiempo.Fecha
+
+QUARTERLY ANALYSIS BEST PRACTICES:
+- MANDATORY: Use SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q DESC
+- MANDATORY: Use column names Year and Q (not MaxYear/MaxQuarter aliases)
+- MANDATORY: Use CROSS JOIN LastQuarter lq for time filtering
+- MANDATORY: Apply WHERE t.Year = lq.Year AND t.Q = lq.Q (not lq.MaxYear/MaxQuarter)
+- Table join sequence: segmentacion → tiempo → producto → cliente_cedi → mercado
+- Always include proper ROW_NUMBER() ranking for "highest/top" questions
+
+COMMON TIME ANALYSIS SCENARIOS:
+- "Last quarter": Use QInfo + LastQuarter pattern above
+- "Current year": WHERE t.Year = (SELECT MAX(Year) FROM dev.tiempo)
+- "Year over year": Use LAG/LEAD window functions with PARTITION BY Year
+- "Quarter comparison": Use LAG(metric, 4) OVER (ORDER BY Year, Q) for YoY quarterly comparison
+
+TIME PERFORMANCE OPTIMIZATION:
+- Always join tiempo table on Fecha column first
+- Use EXISTS instead of IN for subquery filtering
+- Apply time filters early in CTE chain
+- Include time period validation in CTEs
+- Use appropriate indexing hints for large time ranges
+
+FORBIDDEN PATTERNS:
+- NEVER use MAX(Year) and MAX(Q) together in same CTE (causes 0 rows)
+- NEVER use column aliases MaxYear, MaxQuarter, MaxQ in time filtering
+- NEVER assume specific years/quarters exist without validation
+- NEVER use hardcoded dates or time periods in main queries
+- NEVER skip proper time period identification in CTEs
+
+CRITICAL ERROR TO AVOID:
+WITH LastQuarter AS (SELECT MAX(Year) AS MaxYear, MAX(Q) AS MaxQuarter FROM dev.tiempo)
+-- This is BROKEN because it gets the maximum year and maximum quarter across ALL years
+-- which may not exist as a combination (e.g., Year=2025, Q=4 when 2025 only has Q1,Q2)
