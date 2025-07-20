@@ -3,6 +3,10 @@
 
 CRITICAL SQL GENERATION RULES FOR SQL SERVER:
 
+*** URGENT: FOR LAST QUARTER QUERIES USE ONLY THIS PATTERN ***
+WITH LastQuarter AS (SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q DESC)
+*** NEVER USE MAX(Year), MAX(Q) - IT RETURNS 0 ROWS ***
+
 1. TABLE NAMING:
    - ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
    - Use correct column names as shown in schema

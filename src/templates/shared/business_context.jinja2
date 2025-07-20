@@ -1,12 +1,21 @@
 {# BUSINESS CONTEXT - SHARED COMPONENT #}
 {# This component defines the business context and key metrics #}
 
+*** CRITICAL TIME WARNING: USE "SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q DESC" FOR LAST QUARTER ***
+
 BUSINESS CONTEXT:
 - Primary KPI: IngresoNetoSImpuestos (Revenue - Numeric(18,2))
 - Customer Analytics: customer_id + Nombre_cliente (Text(100))
 - Product Analytics: Material (Key) + Producto (Description)
 - Temporal Analytics: calday (Date) - partition key for performance
 - Geographic Analytics: cedi_id (Regional distribution centers)
+
+CEDI ANALYSIS PREFERENCES:
+- When questions mention "CEDI" or "each CEDI", prefer showing CEDI names over cedi_id
+- Use mc.CEDI (CEDI name from dev.mercado) instead of cedi_id for better readability
+- Include both CEDI name and Region (from dev.cliente_cedi) for geographic context
+- Group by CEDI name for business-friendly reporting
+- Order results by Region, then CEDI name for logical geographic grouping
 
 KEY BUSINESS METRICS:
 - Revenue metric: IngresoNetoSImpuestos (primary revenue field)
