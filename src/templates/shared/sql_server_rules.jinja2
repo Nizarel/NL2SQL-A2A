@@ -15,7 +15,7 @@ WITH LastQuarter AS (SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q 
    - IngresoNetoSImpuestos for revenue
 
 2. SQL SERVER SYNTAX REQUIREMENTS:
-   - Use "SELECT TOP {{ limit if limit and limit <= 10000 else 10 }}" instead of "SELECT ... LIMIT"
+   - Use "SELECT TOP N" instead of "SELECT ... LIMIT"
    - Use "SELECT TOP N" instead of "OFFSET ... FETCH NEXT" syntax
    - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
    - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
@@ -24,6 +24,11 @@ WITH LastQuarter AS (SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q 
    - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
    - Use + for string concatenation instead of CONCAT()
 
+*** CRITICAL CTE SYNTAX RULE ***:
+   - ALL queries using CTEs MUST start with WITH keyword
+   - Pattern: WITH CTE1 AS (...), CTE2 AS (...) SELECT ... FROM CTE1 ...
+   - NEVER omit the WITH keyword when using Common Table Expressions
+
 3. TIME PERIOD ANALYSIS PATTERNS:
    - For "last quarter" queries: First find MAX(Year), then find MAX(Quarter) for that specific year
    - Use two-step CTE approach: YearInfo CTE → QuarterInfo CTE → Main Analysis
@@ -31,7 +36,7 @@ WITH LastQuarter AS (SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q 
    - Pattern: FROM main_table INNER JOIN time_filter ON time_conditions
    - Use proper spacing around AS keyword for column aliases
 
-3. CORRECT SYNTAX EXAMPLES:
+4. CORRECT SYNTAX EXAMPLES:
    Date Functions:
    WRONG: SELECT ... WHERE EXTRACT(YEAR FROM calday) = 2025
    CORRECT: SELECT ... WHERE YEAR(calday) = 2025
@@ -43,8 +48,12 @@ WITH LastQuarter AS (SELECT TOP 1 Year, Q FROM dev.tiempo ORDER BY Year DESC, Q 
    Column Aliases:
    WRONG: SUM(revenue)AS total_revenue
    CORRECT: SUM(revenue) AS total_revenue
+   
+   CTE Syntax:
+   WRONG: PotentialPoints AS (...), ServedPoints AS (...) SELECT ...
+   CORRECT: WITH PotentialPoints AS (...), ServedPoints AS (...) SELECT ...
 
-4. BUSINESS CONTEXT REQUIREMENTS:
+5. BUSINESS CONTEXT REQUIREMENTS:
    - Join tables properly using the relationships shown
    - Use meaningful column aliases with proper AS keyword spacing
    - Include appropriate WHERE clauses for business context

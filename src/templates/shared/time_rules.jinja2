@@ -45,7 +45,7 @@ MANDATORY TIME FILTERING PATTERNS:
    CROSS JOIN LastQuarter lq
    WHERE t.Year = lq.Year AND t.Q = lq.Q
 
-3. DATE RELATIONSHIP JOINS:
+4. DATE RELATIONSHIP JOINS:
    - Main fact table: dev.segmentacion (calday column)
    - Time dimension: dev.tiempo (Fecha column)
    - Join condition: dev.segmentacion.calday = dev.tiempo.Fecha
