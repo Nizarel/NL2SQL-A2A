@@ -1,32 +1,16 @@
-{# ENHANCED SQL GENERATION TEMPLATE WITH OPTIMIZATION FEATURES #}
-{# Complexity-aware template with performance hints and adaptive features #}
+{# ENHANCED SQL GENERATION TEMPLATE #}
+{# For complex queries with advanced optimization and business logic #}
 
-{# MANDATORY: Check for forecast/prediction/delivery keywords FIRST - before any other processing #}
+{# EARLY EXIT: Forecast/Delivery Detection #}
 {% if "forecast" in question.lower() or "prediction" in question.lower() or "forecasts" in question.lower() or "predicted" in question.lower() or "estimates" in question.lower() %}
 SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
 {% elif "delivery" in question.lower() or "routes" in question.lower() or "logistics" in question.lower() or "shipping" in question.lower() %}
 SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
 {% else %}
 
-{# PERFORMANCE HINTS - INLINE #}
-{%- if performance_hints %}
--- Performance Optimization Guidelines:
-{%- for hint in performance_hints %}
--- ⚡ {{ hint }}
-{%- endfor %}
-{%- endif %}
-
-{%- if table_priorities %}
--- Recommended Table Join Order: {{ table_priorities|join(' -> ') }}
-{%- endif %}
-
-{%- if complexity_score is defined %}
--- Query Complexity Score: {{ "%.2f"|format(complexity_score) }} (0.0=Simple, 1.0=Complex)
-{%- endif %}
-
 USER QUESTION: {{ question }}
 
-You are an expert SQL query generator for a Microsoft SQL Server business analytics database with advanced optimization capabilities.
+You are an expert SQL query generator for Microsoft SQL Server with advanced optimization and business logic features.
 
 INTENT ANALYSIS:
 {{ intent_analysis.get('analysis', 'No intent analysis available') }}
@@ -43,160 +27,48 @@ QUERY COMPLEXITY ANALYSIS:
 DATABASE SCHEMA:
 {{ schema_context }}
 
-🚨 CRITICAL SCHEMA VALIDATION CHECK:
-- If the question mentions "forecast", "prediction", "forecasts", "predicted", or "estimates": This database contains ONLY actual sales data. Return: SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
-- If the question mentions delivery, routes, logistics, or shipping: Return: SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
-
 {%- if optimized_schema_context is defined %}
 OPTIMIZED SCHEMA CONTEXT:
 {{ optimized_schema_context }}
 {%- endif %}
 
-{# SQL SERVER RULES - INLINE #}
-CRITICAL SQL GENERATION RULES FOR SQL SERVER:
-1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
-
-2. **MANDATORY SCHEMA VALIDATION**:
-   - ONLY use columns that actually exist in the provided database schema
-   - If the question asks for data not available in the schema, explain what data IS available
-   - Available tables: dev.cliente, dev.cliente_cedi, dev.mercado, dev.produto, dev.segmentacion, dev.tiempo
-   - Key columns: customer_id, material_id, calday, IngresoNetoSImpuestos, VentasCajasUnidad, Nombre_cliente
-   - This is a SALES ANALYTICS database - it contains customer, product, revenue, and territory data
-   - DO NOT hallucinate columns for delivery, routing, logistics, or operational data that doesn't exist
-
-3. **MANDATORY SQL SERVER SYNTAX ONLY**:
-   - Use "SELECT TOP {{ limit if limit and limit <= 10000 else 10 }}" instead of "SELECT ... LIMIT"
-   - Use "SELECT TOP N" instead of "OFFSET ... FETCH NEXT" syntax
-   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
-   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
-   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
-   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
-   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
-   - Use + for string concatenation instead of CONCAT()
-   - Use proper spacing around AS keyword for column aliases
-
-4. **PERFORMANCE-OPTIMIZED COLUMN SELECTION**:
-   {%- if suggested_columns %}
-   - Prioritize these columns: {{ suggested_columns | join(', ') }}
-   {%- endif %}
-   - Use specific column names instead of * when possible
-   - Apply column aliases for clarity: column_name AS meaningful_alias
-
-5. **OPTIMIZED JOIN STRATEGY**:
-   {%- if join_strategy is defined %}
-   - Recommended join approach: {{ join_strategy }}
-   {%- endif %}
-   - Use INNER JOIN for better performance when possible
-   - Place most selective conditions first in WHERE clause
-   - Join tables in order of selectivity (smallest to largest result sets)
-
-6. **AGGREGATION OPTIMIZATION**:
-   {%- if aggregation_hints %}
-   {%- for hint in aggregation_hints %}
-   - {{ hint }}
-   {%- endfor %}
-   {%- endif %}
+{% include 'shared/sql_server_rules.jinja2' %}
 
 {%- if optimization_level == "high" %}
-
 ADVANCED OPTIMIZATION TECHNIQUES:
 - Use WITH (Common Table Expressions) for complex queries
 - Apply appropriate indexing hints when necessary
 - Implement query result pagination for large datasets
 - Use CASE statements for conditional logic optimization
-
 {%- endif %}
 
-{# TABLE RELATIONSHIPS - INLINE #}
-TABLE RELATIONSHIPS:
-- dev.segmentacion (FACT TABLE)
-  ├── dev.cliente (DIMENSION - customer_id) [1:M]
-  ├── dev.producto (DIMENSION - material_id->Material) [1:M] 
-  └── dev.tiempo (DIMENSION - calday->Fecha) [1:M]
-- dev.cliente_cedi (BRIDGE TABLE)
-  ├── dev.cliente (customer_id) [M:1]
-  └── dev.mercado (CEDIid->cedi_id) [M:1]
+{% include 'shared/table_relationships.jinja2' %}
 
-{# BUSINESS CONTEXT - INLINE #}
-BUSINESS CONTEXT:
-- Primary KPI: IngresoNetoSImpuestos (Revenue - Numeric(18,2))
-- Customer Analytics: customer_id + Nombre_cliente (Text(100))
-- Product Analytics: Material (Key) + Producto (Description)
-- Temporal Analytics: calday (Date) - partition key for performance
-- Geographic Analytics: cedi_id (Regional distribution centers)
+{% include 'shared/business_context.jinja2' %}
 
 {%- if business_context_hints %}
 BUSINESS LOGIC OPTIMIZATION:
 {%- for hint in business_context_hints %}
-- 💼 {{ hint }}
+- {{ hint }}
 {%- endfor %}
 {%- endif %}
 
-{%- if optimization_level == "high" %}
+Generate a complex SQL Server query that:
+1. Answers the user's question accurately
+2. Uses proper SQL Server syntax
+3. Includes advanced performance optimizations
+4. Uses appropriate JOINs and WHERE conditions
+5. Handles complex business logic
+6. Returns meaningful business insights
 
-HIGH COMPLEXITY QUERY GUIDELINES:
-- Use Common Table Expressions (CTEs) for complex multi-step queries
-- Apply most selective WHERE conditions first for performance
-- Use WITH (NOLOCK) hints for read uncommitted analytics when appropriate
-- Implement proper aggregation grouping and HAVING clauses
-- Order results by performance-optimized columns
-- Limit results appropriately for large datasets
+Your response must contain ONLY executable SQL code.
 
-{%- elif optimization_level == "medium" %}
-
-MEDIUM COMPLEXITY QUERY GUIDELINES:
-- Use specific column selection instead of SELECT *
-- Apply standard JOINs with proper conditions
-- Order WHERE conditions by selectivity for performance
-- Include optional GROUP BY and HAVING as needed
-- Use appropriate ORDER BY for meaningful results
-- Apply TOP clause for result limiting
-
-{%- endif %}
-
-{%- if result_size_warning and (limit is not defined or limit > 10000) %}
-
-⚠️ PERFORMANCE WARNING: Large result set detected. Consider:
-1. Adding more specific WHERE conditions
-2. Using TOP clause to limit results
-3. Implementing pagination for large datasets
-4. Adding appropriate indexes on filter columns
-
-{%- endif %}
-
-FINAL QUERY REQUIREMENTS:
-Generate a SQL Server query that:
-1. Accurately answers the user's question
-2. Uses proper SQL Server syntax (NO PostgreSQL/MySQL functions)
-3. Uses SELECT TOP instead of LIMIT or OFFSET...FETCH NEXT
-4. Uses proper column names from the schema
-5. Includes appropriate JOINs based on relationships
-6. Has proper spacing around AS keyword in column aliases
-7. Is optimized for performance based on complexity level
-8. Returns meaningful business results
-{%- if optimization_level == "high" %}
-9. Uses CTE structure for complex queries when beneficial
-10. Includes performance hints and optimized join order
-{%- endif %}
-
-{%- if debug_mode %}
--- DEBUG MODE: Include execution plan and performance statistics
--- SET STATISTICS IO ON;
--- SET STATISTICS TIME ON;
-{%- endif %}
-
-CRITICAL: Your response must contain ONLY executable SQL code.
 Do NOT include:
 - Explanations before or after the query
 - Markdown formatting (```sql or ```)
 - Template placeholders like [column_name]
 - Multiple queries or query examples
 - Comments explaining what the query does
-
-**IMPORTANT**: If the question asks for data that doesn't exist in the schema (like delivery times, routes, logistics data), return:
-SELECT 'This database contains sales analytics data (customers, products, revenue, territories). The requested information is not available in this schema. Available data includes: customer sales, product performance, revenue analysis, and territorial distribution.' AS explanation;
-
-**NOTE**: If a conditional check above determined that an explanation query should be returned (e.g., for forecast/prediction requests), that explanation query IS the complete and correct response. Do NOT add additional SQL queries after explanation queries.
 
 Start your response immediately with the SQL query (WITH or SELECT statement).
 {% endif %}

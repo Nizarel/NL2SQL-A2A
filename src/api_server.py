@@ -10,11 +10,23 @@ import time
 import re
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+# Load environment variables first
+dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+print(f"🔍 API Server loading .env from: {dotenv_path}")
+print(f"🔍 API Server .env file exists: {os.path.exists(dotenv_path)}")
+result = load_dotenv(dotenv_path, override=True)
+print(f"🔍 API Server load_dotenv result: {result}")
+
+# Test environment variables
+mcp_url = os.getenv('MCP_SERVER_URL')
+print(f"🔍 API Server MCP_SERVER_URL: {mcp_url[:50] if mcp_url else 'None'}...")
 
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

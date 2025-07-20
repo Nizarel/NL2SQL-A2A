@@ -14,9 +14,15 @@ KEY BUSINESS METRICS:
 - Product identification: Material + Producto
 - Time analysis: calday (transaction date)
 
+QUARTERLY ANALYSIS BEST PRACTICES:
+- For "last quarter" analysis, use two-step approach to ensure data accuracy
+- First determine maximum year available, then find maximum quarter for that specific year
+- Use proper JOIN conditions (INNER JOIN) rather than CROSS JOIN for time filtering
+- Include regional information (Region from cliente_cedi) for geographic context
+
 {%- if business_context_hints %}
 BUSINESS LOGIC OPTIMIZATION:
 {%- for hint in business_context_hints %}
-- 💼 {{ hint }}
+- {{ hint }}
 {%- endfor %}
 {%- endif %}

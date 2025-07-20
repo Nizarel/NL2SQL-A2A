@@ -1,0 +1,119 @@
+{# MULTI-STEP SQL GENERATION TEMPLATE #}
+{# For complex business questions that require multiple analytical approaches #}
+
+{# EARLY EXIT: Forecast/Delivery Detection #}
+{% if "forecast" in question.lower() or "prediction" in question.lower() or "forecasts" in question.lower() or "predicted" in question.lower() or "estimates" in question.lower() %}
+SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
+{% elif "delivery" in question.lower() or "routes" in question.lower() or "logistics" in question.lower() or "shipping" in question.lower() %}
+SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
+{% else %}
+
+USER QUESTION: {{ question }}
+
+You are an expert SQL query generator that breaks down complex business questions into multiple analytical steps, then combines results for comprehensive insights.
+
+INTENT ANALYSIS:
+{{ intent_analysis.get('analysis', 'No intent analysis available') }}
+
+DATABASE SCHEMA:
+{{ schema_context }}
+
+{% include 'shared/sql_server_rules.jinja2' %}
+
+{% include 'shared/table_relationships.jinja2' %}
+
+{% include 'shared/business_context.jinja2' %}
+
+MULTI-STEP QUERY STRATEGY:
+
+This template is ONLY for questions requiring MULTIPLE analytical perspectives or cross-dimensional comparisons.
+
+MULTI-DIMENSIONAL ANALYSIS REQUIREMENTS:
+- Explicit requests for comparison between different analytical dimensions
+- Questions requiring fundamentally different calculation methodologies
+- Cross-dimensional impact analysis across unrelated business entities
+
+EXAMPLES OF TRUE MULTI-STEP QUERIES:
+- "Compare product performance versus category performance and regional impact"
+- "Analyze both customer profitability and sales channel effectiveness across time periods"
+- "Show impact analysis across zones, product categories, and customer segments simultaneously"
+
+QUERY STRUCTURE APPROACH:
+- Build separate analytical CTEs for each distinct analytical perspective
+- Use UNION ALL only when dimensions cannot be analyzed in single query structure
+- Each CTE should provide unique business insights not achievable through single analysis
+- Combine results to answer the complex multi-dimensional business question
+
+IF question requests time-based progressive analysis:
+→ Build time-aware CTEs that layer insights progressively
+→ Each time period or time comparison gets its own analytical layer
+
+PREFERRED APPROACH FOR YOUR QUESTION TYPE:
+Since this question asks for "highest profit for each CEDI", use single CTE approach:
+1. Time Period CTE (to determine last quarter)  
+2. Profit Analysis CTE with proper grouping
+3. Ranking CTE using ROW_NUMBER() OVER (PARTITION BY CEDI ORDER BY profit DESC)
+4. Final SELECT filtering for top result per CEDI
+
+This approach is cleaner, more efficient, and produces consistent results.
+
+TEMPLATE EXECUTION GUIDELINES:
+- Favor single comprehensive analysis over multiple separate analyses
+- Use UNION ALL only when user explicitly requests comparison between fundamentally different dimensions
+- For "for each" or "by" questions, use single CTE with proper window functions and partitioning
+- Each CTE should serve a specific analytical purpose and add distinct value
+- Use meaningful CTE names that describe their analytical function
+- Apply consistent business logic and filtering across all analysis components
+- Ensure proper joins follow established table relationships
+- Format output for clear business consumption and insight delivery
+
+PREFERRED QUERY STRUCTURE FOR MOST BUSINESS QUESTIONS:
+1. Time Period CTE (if time reference exists)
+2. Main Analysis CTE with proper grouping and window functions
+3. Final SELECT with clear business-friendly output
+
+AVOID: Unnecessary UNION ALL operations that duplicate similar analysis at different granular levels
+PREFER: Single comprehensive analysis with proper partitioning and ranking
+
+ESSENTIAL JOIN PATTERNS (use these exact structures):
+FROM dev.segmentacion s 
+INNER JOIN dev.cliente_cedi cc ON s.customer_id = cc.customer_id 
+INNER JOIN dev.producto p ON s.material_id = p.Material 
+INNER JOIN dev.tiempo t ON s.calday = t.Fecha 
+
+ESSENTIAL FILTER PATTERNS (always include these):
+WHERE cc.CEDI IS NOT NULL 
+  AND s.VentasCajasUnidad > 0 
+  AND t.Q = [determined_quarter] 
+  AND t.Year = [determined_year]
+
+Your response must contain ONLY executable SQL code that follows the appropriate analysis pattern.
+
+ANALYSIS PATTERN SELECTION:
+{% set is_single_dimensional = ("for each" in question.lower() or "by each" in question.lower() or "per " in question.lower()) and not ("compare" in question.lower() and "versus" in question.lower()) %}
+{% set has_time_reference = ("last" in question.lower() or "previous" in question.lower() or "recent" in question.lower() or "quarter" in question.lower() or "month" in question.lower() or "year" in question.lower()) %}
+
+{% if is_single_dimensional %}
+{# SINGLE DIMENSIONAL ANALYSIS - Use comprehensive CTE approach #}
+Generate a query using the following structure:
+1. Time Period CTE (if time reference exists)
+2. Main Analysis CTE with comprehensive metrics and proper grouping  
+3. Ranking CTE using window functions for "for each" logic
+4. Final SELECT with clear business results
+
+Use ROW_NUMBER() OVER (PARTITION BY [grouping_entity] ORDER BY [metric] DESC) for ranking.
+Return only the top result per group by filtering WHERE ranking = 1.
+
+{% else %}
+{# TRUE MULTI-DIMENSIONAL ANALYSIS - Use multi-CTE with UNION approach #}  
+Generate a query using multiple analytical perspectives:
+1. Time Period CTE (if needed)
+2. Separate analysis CTEs for each distinct dimension
+3. UNION ALL to combine different analytical perspectives
+4. Proper output standardization across all dimensions
+
+{% endif %}
+
+Start your response immediately with the SQL query (WITH statement).
+
+{% endif %}

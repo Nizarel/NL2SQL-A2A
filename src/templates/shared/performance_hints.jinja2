@@ -4,14 +4,14 @@
 {%- if performance_hints %}
 -- Performance Optimization Guidelines:
 {%- for hint in performance_hints %}
--- ⚡ {{ hint }}
+-- {{ hint }}
 {%- endfor %}
 {%- endif %}
 
 {%- if suggested_indexes %}
 -- Recommended Indexes for Optimal Performance:
 {%- for index in suggested_indexes %}
--- 📊 {{ index }}
+-- {{ index }}
 {%- endfor %}
 {%- endif %}
 
@@ -20,16 +20,16 @@
 {%- endif %}
 
 {%- if relationship_hints %}
-RELATIONSHIP OPTIMIZATION HINTS:
+-- Relationship Optimization Hints:
 {%- for hint in relationship_hints %}
-- 🔄 {{ hint }}
+-- {{ hint }}
 {%- endfor %}
 {%- endif %}
 
 {%- if aggregation_hints %}
-AGGREGATION OPTIMIZATION:
+-- Aggregation Optimization:
 {%- for hint in aggregation_hints %}
-- 📈 {{ hint }}
+-- {{ hint }}
 {%- endfor %}
 {%- endif %}
 

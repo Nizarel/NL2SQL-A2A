@@ -26,12 +26,13 @@ class SQLGeneratorAgent(BaseAgent):
     - Advanced SQL generation patterns
     """
     
-    # Template selection thresholds for better performance
+    # Template selection thresholds for better performance and consistency
     TEMPLATE_THRESHOLDS = {
-        0.7: "advanced",
-        0.3: "intermediate", 
-        0.2: "enhanced",
-        0.0: "basic"
+        # Removed multi_step template to ensure consistency - use advanced for all high complexity
+        0.75: "advanced",       # High complexity - handles all complex queries including "for each" 
+        0.3: "intermediate",    # Medium complexity
+        0.2: "enhanced",        # Enhanced features
+        0.0: "basic"            # Basic queries
     }
     
     def __init__(self, kernel: Kernel):
@@ -51,8 +52,9 @@ class SQLGeneratorAgent(BaseAgent):
         template_files = {
             'basic': 'sql_generation.jinja2',
             'intermediate': 'intermediate_sql_generation.jinja2', 
-            'advanced': 'advanced_sql_generation.jinja2',
-            'enhanced': 'enhanced_sql_generation.jinja2'
+            'enhanced': 'enhanced_sql_generation.jinja2',
+            'advanced': 'advanced_sql_generation.jinja2'
+            # Removed multi_step template to ensure consistency
         }
         
         try:
@@ -160,7 +162,7 @@ class SQLGeneratorAgent(BaseAgent):
             print(f"🔍 Query complexity score: {complexity_score:.2f} ({complexity_analysis['complexity_level']})")
             
             # STEP 2: Select appropriate template based on complexity
-            template_choice = self._select_template_by_complexity(complexity_score)
+            template_choice = self._select_template_by_complexity(complexity_score, question)
             
             print(f"📋 Selected template: {template_choice}")
             
@@ -228,6 +230,16 @@ class SQLGeneratorAgent(BaseAgent):
         """
         # Grouped complexity indicators for better performance
         complexity_pattern_groups = {
+            'multi_step_indicators': {
+                'patterns': [
+                    r'\b(each|every|per|for\s+each|by\s+each)\b.*\b(cedi|region|territory|location)\b',
+                    r'\b(highest|best|top|maximum|most|greatest)\b.*\b(profit|revenue|sales)\b.*\b(each|every|per)\b',
+                    r'\b(which|what).*\b(product|category)\b.*\b(highest|best|top)\b.*\b(each|every|per)\b',
+                    r'\b(compare|comparison|versus|vs|against)\b.*\b(across|between|within)\b',
+                    r'\b(both|all|multiple)\b.*\b(product|category|dimension|level)\b'
+                ],
+                'weight': 0.6
+            },
             'join_indicators': {
                 'patterns': [
                     r'\b(join|joins|joining|combine|merge|connect)\b',
@@ -343,13 +355,46 @@ class SQLGeneratorAgent(BaseAgent):
         if any('analytical' in pattern for pattern in matched_patterns) and \
            any('business' in pattern for pattern in matched_patterns):
             score += 0.15  # Business analytics bonus
+            
+        # Multi-step analysis bonus - questions requiring multiple analytical perspectives
+        if any('multi_step' in pattern for pattern in matched_patterns):
+            # Be more selective about multi-step bonus - only for truly complex multi-dimensional questions
+            multi_dimensional_phrases = [
+                "compare.*and.*across", "both.*and.*by", "multiple.*perspective", 
+                "various.*dimension", "different.*level.*analysis"
+            ]
+            truly_multi_dimensional = any(re.search(phrase, question_lower) for phrase in multi_dimensional_phrases)
+            
+            if truly_multi_dimensional:
+                score += 0.3  # Significant boost for truly multi-dimensional queries
+                print("🔍 True multi-dimensional analysis patterns detected - boosting complexity score")
+            else:
+                score += 0.15  # Moderate boost for complex but single-dimensional queries
+                print("🎯 Complex single-dimensional analysis detected - moderate complexity boost")
         
-        # Cap the score at 1.0
+        # Additional multi-step detection based on question structure - be more conservative
+        multi_step_phrases = [
+            "for each", "per cedi", "by cedi", "each cedi", 
+            "which product", "what product", "which category", "what category",
+            "highest profit", "best performing", "top performer"
+        ]
+        
+        multi_step_matches = sum(1 for phrase in multi_step_phrases if phrase in question_lower)
+        if multi_step_matches >= 3:  # Require more matches to trigger multi-step
+            score += 0.2  # Reduced bonus
+            print(f"🎯 Multiple complexity indicators detected: {multi_step_matches}")
+        elif multi_step_matches >= 2:
+            score += 0.1  # Minor boost for moderate complexity
+            print(f"📊 Moderate complexity indicators detected: {multi_step_matches}")
         score = min(float(score), 1.0)
         
         # Determine complexity level with adjusted thresholds
         try:
-            if score >= 0.7:
+            if score >= 0.8:
+                complexity_level = "VERY_HIGH"
+                estimated_tables = "4+"
+                estimated_joins = "3+"
+            elif score >= 0.7:
                 complexity_level = "HIGH"
                 estimated_tables = "3+"
                 estimated_joins = "2+"
@@ -377,23 +422,39 @@ class SQLGeneratorAgent(BaseAgent):
             "estimated_joins_needed": estimated_joins,
             "requires_aggregation": any('aggregation' in pattern for pattern in matched_patterns),
             "requires_time_analysis": any('temporal' in pattern for pattern in matched_patterns),
-            "requires_ranking": any('analytical' in pattern for pattern in matched_patterns)
+            "requires_ranking": any('analytical' in pattern for pattern in matched_patterns),
+            "requires_multi_step": any('multi_step' in pattern for pattern in matched_patterns)
         }
         
         return analysis
     
-    def _select_template_by_complexity(self, complexity_score: float) -> str:
+    def _select_template_by_complexity(self, complexity_score: float, question: str = "") -> str:
         """
-        Select appropriate template based on complexity score using optimized thresholds
+        Select appropriate template based on complexity score and question pattern analysis
         """
         try:
             # Ensure complexity_score is a float
             score = float(complexity_score) if complexity_score is not None else 0.0
+            question_lower = question.lower() if question else ""
             
+            # Special logic for single-dimensional "for each" questions
+            is_single_dimensional_each = (
+                ("for each" in question_lower or "per " in question_lower or "by each" in question_lower) and 
+                not ("compare" in question_lower and ("versus" in question_lower or "vs" in question_lower)) and
+                not ("both" in question_lower and "and" in question_lower)
+            )
+            
+            # Force single-dimensional "for each" questions to use advanced template (not multi_step)
+            if is_single_dimensional_each and score >= 0.75:
+                print(f"🎯 Single-dimensional 'for each' pattern detected - using advanced template (score: {score})")
+                return "advanced" if "advanced" in self.template_functions else "enhanced"
+            
+            # Standard template selection for other patterns
             for threshold, template in self.TEMPLATE_THRESHOLDS.items():
                 if score >= float(threshold):
                     return template if template in self.template_functions else "basic"
             return "basic"
+            
         except (ValueError, TypeError) as e:
             print(f"⚠️ Template selection error: {e}, using basic template")
             return "basic"
