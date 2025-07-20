@@ -39,15 +39,10 @@
 •	Which subterritory shows the highest sales growth for a specific product category (e.g., carbonated vs. non-carbonated) and what factors explain it?
 
 
-Examples of Additional Questions Revenue Performance Agent can Handle:
-Currently Supported Through Existing Tools:
+
 "What's the month-over-month revenue growth for the last 6 months?"
 "Which zones have the highest revenue per customer?"
 "What's the revenue contribution of each product category?"
 "Show me revenue performance by day of week"
 "What's the revenue impact of new product launches?"
 
-Partially Supported (Would Need Tool Enhancement):
-"What's the revenue per sales representative?" (needs sales rep data)
-"How does weather affect revenue patterns?" (needs external data)
-"What's the revenue cannibalization between products?" (needs advanced analysis)

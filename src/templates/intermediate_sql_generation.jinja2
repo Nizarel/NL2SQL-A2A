@@ -1,13 +1,58 @@
 {# INTERMEDIATE COMPLEXITY SQL GENERATION TEMPLATE #}
 {# For medium complexity queries with moderate optimization #}
 
-{%- include 'shared/performance_hints.jinja2' %}
+{# MANDATORY: Check for forecast/prediction/delivery keywords FIRST - before any other processing #}
+{% if "forecast" in question.lower() or "prediction" in question.lower() or "forecasts" in question.lower() or "predicted" in question.lower() or "estimates" in question.lower() %}
+SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
+{% elif "delivery" in question.lower() or "routes" in question.lower() or "logistics" in question.lower() or "shipping" in question.lower() %}
+SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
+{% else %}
+
+{# PERFORMANCE HINTS - INLINE #}
+{%- if performance_hints %}
+-- Performance Optimization Guidelines:
+{%- for hint in performance_hints %}
+-- ⚡ {{ hint }}
+{%- endfor %}
+{%- endif %}
+
+{%- if suggested_indexes %}
+-- Recommended Indexes for Optimal Performance:
+{%- for index in suggested_indexes %}
+-- 📊 {{ index }}
+{%- endfor %}
+{%- endif %}
+
+{%- if table_priorities %}
+-- Recommended Table Join Order: {{ table_priorities|join(' -> ') }}
+{%- endif %}
+
+{%- if complexity_score is defined %}
+-- Query Complexity Score: {{ "%.2f"|format(complexity_score) }} (0.0=Simple, 1.0=Complex)
+{%- endif %}
+
+{%- if optimization_level %}
+-- Optimization Level: {{ optimization_level }}
+{%- endif %}
 
 -- Query Complexity: INTERMEDIATE (Multiple tables, some aggregations)
 
-You are an expert SQL query generator for Microsoft SQL Server with intermediate optimization features.
+🚨🚨🚨 MANDATORY PRE-PROCESSING CHECK - READ FIRST 🚨🚨🚨
+STEP 1: SCAN THE USER QUESTION FOR FORBIDDEN KEYWORDS
+Question: "{{ question }}"
+
+STEP 2: KEYWORD DETECTION
+{% if "forecast" in question.lower() or "prediction" in question.lower() or "forecasts" in question.lower() or "predicted" in question.lower() or "estimates" in question.lower() %}
+FORECAST/PREDICTION KEYWORD DETECTED!
+RESPONSE: SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
+{% elif "delivery" in question.lower() or "routes" in question.lower() or "logistics" in question.lower() or "shipping" in question.lower() %}
+DELIVERY/LOGISTICS KEYWORD DETECTED!
+RESPONSE: SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
+{% else %}
 
 USER QUESTION: {{ question }}
+
+You are an expert SQL query generator for Microsoft SQL Server with intermediate optimization features.
 
 INTENT ANALYSIS:
 {{ intent_analysis.get('analysis', 'No intent analysis available') }}
@@ -15,9 +60,34 @@ INTENT ANALYSIS:
 DATABASE SCHEMA:
 {{ schema_context }}
 
-{%- include 'shared/sql_server_rules.jinja2' %}
+🚨 CRITICAL SCHEMA VALIDATION CHECK:
+- If the question mentions "forecast", "prediction", "forecasts", "predicted", or "estimates": This database contains ONLY actual sales data. Return: SELECT 'This database contains only actual sales data. No forecast or prediction data is available for comparison. Available metrics: actual revenue, units sold, customer analysis, product performance.' AS explanation;
+- If the question mentions delivery, routes, logistics, or shipping: Return: SELECT 'This database contains sales analytics data only. No delivery or routing data is available.' AS explanation;
 
-3. **INTERMEDIATE OPTIMIZATION FEATURES**:
+{# SQL SERVER RULES - INLINE #}
+CRITICAL SQL GENERATION RULES FOR SQL SERVER:
+1. ALWAYS use 'dev.' prefix for table names (e.g., dev.cliente, dev.segmentacion)
+
+2. **MANDATORY SCHEMA VALIDATION**:
+   - ONLY use columns that actually exist in the provided database schema
+   - If the question asks for data not available in the schema, explain what data IS available
+   - Available tables: dev.cliente, dev.cliente_cedi, dev.mercado, dev.producto, dev.segmentacion, dev.tiempo
+   - Key columns: customer_id, material_id, calday, IngresoNetoSImpuestos, VentasCajasUnidad, Nombre_cliente
+   - This is a SALES ANALYTICS database - it contains customer, product, revenue, and territory data
+   - DO NOT hallucinate columns for delivery, routing, logistics, or operational data that doesn't exist
+
+3. **MANDATORY SQL SERVER SYNTAX ONLY**:
+   - Use "SELECT TOP {{ limit if limit and limit <= 10000 else 10 }}" instead of "SELECT ... LIMIT"
+   - Use "SELECT TOP N" instead of "OFFSET ... FETCH NEXT" syntax
+   - Use YEAR(date_column) instead of EXTRACT(YEAR FROM date_column)
+   - Use MONTH(date_column) instead of EXTRACT(MONTH FROM date_column)
+   - Use DAY(date_column) instead of EXTRACT(DAY FROM date_column)
+   - Use GETDATE() instead of NOW() or CURRENT_TIMESTAMP
+   - Use CAST(GETDATE() AS DATE) instead of CURRENT_DATE
+   - Use + for string concatenation instead of CONCAT()
+   - Use proper spacing around AS keyword for column aliases
+
+4. **INTERMEDIATE OPTIMIZATION FEATURES**:
    {%- if suggested_columns %}
    - Focus on these key columns: {{ suggested_columns[:5] | join(', ') }}
    {%- endif %}
@@ -30,9 +100,30 @@ DATABASE SCHEMA:
    - Use HAVING for post-aggregation filtering
    - Apply appropriate ORDER BY for results
 
-{%- include 'shared/table_relationships.jinja2' %}
+{# TABLE RELATIONSHIPS - INLINE #}
+TABLE RELATIONSHIPS:
+- dev.segmentacion (FACT TABLE)
+  ├── dev.cliente (DIMENSION - customer_id) [1:M]
+  ├── dev.producto (DIMENSION - material_id->Material) [1:M] 
+  └── dev.tiempo (DIMENSION - calday->Fecha) [1:M]
+- dev.cliente_cedi (BRIDGE TABLE)
+  ├── dev.cliente (customer_id) [M:1]
+  └── dev.mercado (CEDIid->cedi_id) [M:1]
 
-{%- include 'shared/business_context.jinja2' %}
+{# BUSINESS CONTEXT - INLINE #}
+BUSINESS CONTEXT:
+- Primary KPI: IngresoNetoSImpuestos (Revenue - Numeric(18,2))
+- Customer Analytics: customer_id + Nombre_cliente (Text(100))
+- Product Analytics: Material (Key) + Producto (Description)
+- Temporal Analytics: calday (Date) - partition key for performance
+- Geographic Analytics: cedi_id (Regional distribution centers)
+
+{%- if business_context_hints %}
+BUSINESS LOGIC OPTIMIZATION:
+{%- for hint in business_context_hints %}
+- 💼 {{ hint }}
+{%- endfor %}
+{%- endif %}
 
 Generate an intermediate-complexity SQL Server query that:
 1. Answers the user's question accurately
@@ -43,6 +134,9 @@ Generate an intermediate-complexity SQL Server query that:
 6. Returns meaningful business insights
 
 CRITICAL: Your response must contain ONLY executable SQL code.
+
+**NOTE**: If a conditional check above determined that an explanation query should be returned (e.g., for forecast/prediction requests), that explanation query IS the complete and correct response. Do NOT add additional SQL queries after explanation queries.
+
 Do NOT include:
 - Explanations before or after the query
 - Markdown formatting (```sql or ```)
@@ -51,3 +145,4 @@ Do NOT include:
 - Comments explaining what the query does
 
 Start your response immediately with the SQL query (WITH or SELECT statement).
+{% endif %}

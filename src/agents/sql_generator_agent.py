@@ -289,30 +289,51 @@ class SQLGeneratorAgent(BaseAgent):
         # Calculate base complexity score
         score = 0.0
         matched_patterns = []
-        question_lower = question.lower()
+        question_lower = str(question).lower() if question else ""
         
         # Process pattern groups efficiently
         for group_name, group_data in complexity_pattern_groups.items():
             group_match = False
+            weight = float(group_data.get('weight', 0.0))  # Ensure weight is float
             for pattern in group_data['patterns']:
-                if re.search(pattern, question_lower):
-                    if not group_match:  # Only count once per group to avoid over-scoring
-                        score += group_data['weight']
-                        group_match = True
-                    matched_patterns.append(f"{group_name}:{pattern.split('|')[0].replace('\\b', '').replace('(', '')}")
+                try:
+                    if re.search(pattern, question_lower):
+                        if not group_match:  # Only count once per group to avoid over-scoring
+                            score += weight
+                            group_match = True
+                        matched_patterns.append(f"{group_name}:{pattern.split('|')[0].replace('\\b', '').replace('(', '')}")
+                except (TypeError, AttributeError) as e:
+                    print(f"⚠️ Pattern matching error for {pattern}: {e}")
+                    continue
                     
         # Additional complexity factors
         word_count = len(question.split())
-        if word_count > 15:
-            score += 0.1
-        if word_count > 25:
-            score += 0.15
-        if word_count > 35:
-            score += 0.2
+        try:
+            if word_count > 15:
+                score += 0.1
+            if word_count > 25:
+                score += 0.15
+            if word_count > 35:
+                score += 0.2
+        except TypeError:
+            # Handle case where word_count might not be an integer
+            word_count = int(len(question.split())) if question else 0
+            if word_count > 15:
+                score += 0.1
+            if word_count > 25:
+                score += 0.15
+            if word_count > 35:
+                score += 0.2
         
         # Question structure complexity
-        question_complexity = question.count('?') + question.count(',') * 0.1
-        score += min(question_complexity, 0.3)
+        try:
+            question_complexity = question.count('?') + question.count(',') * 0.1
+            score += min(question_complexity, 0.3)
+        except TypeError:
+            # Handle case where question might not be a string
+            question = str(question) if question else ""
+            question_complexity = question.count('?') + question.count(',') * 0.1
+            score += min(question_complexity, 0.3)
         
         # Combination bonuses
         if any('aggregation' in pattern for pattern in matched_patterns) and \
@@ -324,18 +345,24 @@ class SQLGeneratorAgent(BaseAgent):
             score += 0.15  # Business analytics bonus
         
         # Cap the score at 1.0
-        score = min(score, 1.0)
+        score = min(float(score), 1.0)
         
         # Determine complexity level with adjusted thresholds
-        if score >= 0.7:
-            complexity_level = "HIGH"
-            estimated_tables = "3+"
-            estimated_joins = "2+"
-        elif score >= 0.3:
-            complexity_level = "MEDIUM"
-            estimated_tables = "2-3"
-            estimated_joins = "1-2"
-        else:
+        try:
+            if score >= 0.7:
+                complexity_level = "HIGH"
+                estimated_tables = "3+"
+                estimated_joins = "2+"
+            elif score >= 0.3:
+                complexity_level = "MEDIUM"
+                estimated_tables = "2-3"
+                estimated_joins = "1-2"
+            else:
+                complexity_level = "LOW"
+                estimated_tables = "1-2"
+                estimated_joins = "0-1"
+        except TypeError:
+            print(f"⚠️ Score comparison error, score: {score} (type: {type(score)})")
             complexity_level = "LOW"
             estimated_tables = "1-2"
             estimated_joins = "0-1"
@@ -359,10 +386,17 @@ class SQLGeneratorAgent(BaseAgent):
         """
         Select appropriate template based on complexity score using optimized thresholds
         """
-        for threshold, template in self.TEMPLATE_THRESHOLDS.items():
-            if complexity_score >= threshold:
-                return template if template in self.template_functions else "basic"
-        return "basic"
+        try:
+            # Ensure complexity_score is a float
+            score = float(complexity_score) if complexity_score is not None else 0.0
+            
+            for threshold, template in self.TEMPLATE_THRESHOLDS.items():
+                if score >= float(threshold):
+                    return template if template in self.template_functions else "basic"
+            return "basic"
+        except (ValueError, TypeError) as e:
+            print(f"⚠️ Template selection error: {e}, using basic template")
+            return "basic"
     
     def _generate_optimization_context(self, complexity_analysis: Dict[str, Any], 
                                      schema_analysis: Dict[str, Any] = None,
@@ -370,20 +404,25 @@ class SQLGeneratorAgent(BaseAgent):
         """
         Generate optimization context based on complexity with conditional processing for performance
         """
-        complexity_score = complexity_analysis["complexity_score"]
-        complexity_level = complexity_analysis["complexity_level"]
-        
-        # For very simple queries, return basic context to avoid overhead
-        if complexity_score < 0.2:
+        try:
+            complexity_score = float(complexity_analysis.get("complexity_score", 0.0))
+            complexity_level = complexity_analysis.get("complexity_level", "LOW")
+            
+            # For very simple queries, return basic context to avoid overhead
+            if complexity_score < 0.2:
+                return self._generate_basic_context(complexity_analysis)
+            
+            # For medium complexity, generate moderate context
+            elif complexity_score < 0.7:
+                return self._generate_medium_context(complexity_analysis, schema_analysis, question)
+            
+            # For high complexity, generate full advanced context
+            else:
+                return self._generate_advanced_context(complexity_analysis, schema_analysis, question)
+                
+        except (ValueError, TypeError, KeyError) as e:
+            print(f"⚠️ Optimization context generation error: {e}, using basic context")
             return self._generate_basic_context(complexity_analysis)
-        
-        # For medium complexity, generate moderate context
-        elif complexity_score < 0.7:
-            return self._generate_medium_context(complexity_analysis, schema_analysis, question)
-        
-        # For high complexity, generate full advanced context
-        else:
-            return self._generate_advanced_context(complexity_analysis, schema_analysis, question)
     
     def _generate_basic_context(self, complexity_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate basic optimization context for simple queries"""
@@ -423,9 +462,18 @@ class SQLGeneratorAgent(BaseAgent):
         if complexity_analysis.get("requires_time_analysis"):
             hints.append("Optimize date range queries with proper indexing")
         
-        if complexity_analysis.get("estimated_joins_needed", 0) > 0:
-            hints.append("Use INNER JOIN when possible for better performance")
-            optimization_context["join_strategy"] = "optimized_order"
+        if complexity_analysis.get("estimated_joins_needed"):
+            try:
+                joins_needed = int(complexity_analysis.get("estimated_joins_needed", 0))
+                if joins_needed > 0:
+                    hints.append("Use INNER JOIN when possible for better performance")
+                    optimization_context["join_strategy"] = "optimized_order"
+            except (ValueError, TypeError):
+                # Handle non-numeric join estimates like "1-2" or "2+"
+                joins_str = str(complexity_analysis.get("estimated_joins_needed", "0"))
+                if any(char.isdigit() for char in joins_str):
+                    hints.append("Use INNER JOIN when possible for better performance")
+                    optimization_context["join_strategy"] = "optimized_order"
         
         optimization_context["performance_hints"] = hints
         
@@ -479,11 +527,22 @@ class SQLGeneratorAgent(BaseAgent):
                 "Consider TOP clause instead of complex ranking when possible"
             ])
         
-        if complexity_analysis.get("estimated_joins_needed", 0) > 1:
-            hints.extend([
-                "Optimize join order: most selective table first",
-                "Use INNER JOIN when possible for better performance"
-            ])
+        if complexity_analysis.get("estimated_joins_needed"):
+            try:
+                joins_needed = int(complexity_analysis.get("estimated_joins_needed", 0))
+                if joins_needed > 1:
+                    hints.extend([
+                        "Optimize join order: most selective table first",
+                        "Use INNER JOIN when possible for better performance"
+                    ])
+            except (ValueError, TypeError):
+                # Handle non-numeric join estimates like "1-2" or "2+"
+                joins_str = str(complexity_analysis.get("estimated_joins_needed", "0"))
+                if any(char.isdigit() for char in joins_str) and ("2" in joins_str or "+" in joins_str):
+                    hints.extend([
+                        "Optimize join order: most selective table first",
+                        "Use INNER JOIN when possible for better performance"
+                    ])
         
         # Add advanced optimization hints
         hints.extend([
