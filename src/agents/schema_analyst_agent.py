@@ -7,7 +7,6 @@ import time
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
 
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai.embedding_generator_base import EmbeddingGeneratorBase
@@ -15,19 +14,7 @@ from semantic_kernel.connectors.ai.embedding_generator_base import EmbeddingGene
 from agents.base_agent import BaseAgent
 from services.schema_service import SchemaService
 from services.schema_analysis_cache_service import InMemorySchemaCache
-
-
-@dataclass
-class SchemaAnalysisResult:
-    """Data class for schema analysis results"""
-    relevant_tables: List[str]
-    relationships: Dict[str, Any]
-    business_context: Dict[str, Any]
-    key_metrics: List[str]
-    join_strategy: Dict[str, Any]
-    optimized_schema: str
-    performance_hints: List[str]
-    confidence_score: float
+from Models.schema_analysis_result import SchemaAnalysisResult
 
 
 class SchemaAnalystAgent(BaseAgent):
