@@ -492,14 +492,20 @@ class OrchestratorMemoryService(MemoryStoreBase):
                         session_id = conversation_id
                     
                     # Store vector embedding
-                    self.chat_logger.add_vector_embedding(
-                        entry_id=entry_id,
-                        user_id=user_id,
-                        session_id=session_id,
-                        embedding=embedding.tolist()
-                    )
-                    
-                    print(f"✅ Stored conversation with embedding: {entry_id}")
+                    try:
+                        self.chat_logger.add_vector_embedding(
+                            entry_id=entry_id,
+                            user_id=user_id,
+                            session_id=session_id,
+                            embedding=embedding.tolist()
+                        )
+                        print(f"✅ Stored conversation with embedding: {entry_id}")
+                    except Exception as embed_error:
+                        print(f"❌ Failed to store vector embedding: {embed_error}")
+                        print(f"   Entry ID: {entry_id}, User: {user_id}, Session: {session_id}")
+                        print(f"   Embedding size: {len(embedding.tolist())}")
+                        # Continue without embedding
+                        print(f"✅ Stored conversation without embedding: {entry_id}")
                 else:
                     print("⚠️ Embedding generation failed - stored without vector")
                     

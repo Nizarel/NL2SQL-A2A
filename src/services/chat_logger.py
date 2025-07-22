@@ -479,21 +479,64 @@ class ChatLogger:
         """Add vector embedding to an existing chat log entry for GA Vector Search"""
         self.initialize()
         
-        partition_key = f"{user_id}/{session_id}"
+        # Use composite partition key for containers with MultiHash partition strategy
+        partition_key = [user_id, session_id]
         
         try:
-            # Get the existing document
+            # Get the existing document using composite partition key
             doc = self.container.read_item(item=entry_id, partition_key=partition_key)
             
             # Add the embedding
             doc["embedding"] = embedding
             
-            # Update the document
+            # Update the document - SDK will automatically use correct partition key from document fields
             self.container.replace_item(item=doc, body=doc)
             self.logger.info(f"Added vector embedding to entry: {entry_id}")
             
         except Exception as e:
             self.logger.error(f"Failed to add vector embedding: {e}")
+            self.logger.error(f"Entry ID: {entry_id}, User: {user_id}, Session: {session_id}")
+            
+            # Enhanced debugging for composite partition key issues
+            try:
+                # Try to find the document with cross-partition query
+                query = "SELECT c.id, c.user_id, c.session_id, c.document_type FROM c WHERE c.id = @entry_id"
+                items = list(self.container.query_items(
+                    query=query,
+                    parameters=[{"name": "@entry_id", "value": entry_id}],
+                    enable_cross_partition_query=True
+                ))
+                
+                if items:
+                    found_doc = items[0]
+                    print(f"🔍 Found document via cross-partition query:")
+                    print(f"   ID: {found_doc.get('id')}")
+                    print(f"   user_id: {found_doc.get('user_id')}")
+                    print(f"   session_id: {found_doc.get('session_id')}")
+                    print(f"   document_type: {found_doc.get('document_type')}")
+                    
+                    # Try with the correct composite key from the found document
+                    correct_composite_key = [found_doc.get('user_id'), found_doc.get('session_id')]
+                    print(f"🔍 Trying with correct composite key: {correct_composite_key}")
+                    
+                    found_doc_full = self.container.read_item(
+                        item=entry_id, 
+                        partition_key=correct_composite_key
+                    )
+                    found_doc_full["embedding"] = embedding
+                    found_doc_full["updated_at"] = datetime.utcnow().isoformat()
+                    
+                    self.container.replace_item(item=found_doc_full, body=found_doc_full)
+                    print(f"✅ Successfully added embedding using cross-partition query correction")
+                    self.logger.info(f"Added vector embedding to entry using corrected partition key: {entry_id}")
+                    
+                else:
+                    print(f"❌ Document {entry_id} not found in any partition")
+                    self.logger.error(f"Document {entry_id} not found in any partition")
+                    
+            except Exception as debug_e:
+                print(f"❌ Cross-partition debug also failed: {debug_e}")
+                self.logger.error(f"Cross-partition debug failed: {debug_e}")
     
     def vector_search(self, user_id: str, query_embedding: List[float], limit: int = 5, similarity_threshold: float = 0.7) -> List[ChatLogEntry]:
         """
