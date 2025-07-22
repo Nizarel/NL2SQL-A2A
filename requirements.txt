@@ -7,6 +7,10 @@ aiohttp
 httpx
 pydantic
 
+# Azure dependencies for secure production deployments
+azure-cosmos>=4.9.0
+azure-identity>=1.23.1
+
 # FastAPI and server dependencies
 fastapi>=0.116.1
 uvicorn[standard]>=0.35.0
