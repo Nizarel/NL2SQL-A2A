@@ -410,7 +410,7 @@ class OrchestratorMemoryService(MemoryStoreBase):
         Args:
             conversation_id: Unique conversation identifier
             user_message: User's input message
-            assistant_response: Assistant's response
+            assistant_response: Assistant's response (can be string or structured data)
             metadata: Optional metadata dictionary
         
         Returns:
@@ -427,14 +427,31 @@ class OrchestratorMemoryService(MemoryStoreBase):
             user_id = metadata.get("user_id", "default_user") if metadata else "default_user"
             session_id = conversation_id
         
-        # Create agent response from assistant message
-        agent_response = AgentResponse(
-            agent_type="OrchestratorAgent",
-            response=assistant_response,
-            success=True,
-            summary=assistant_response,
-            insights=f"Response to: {user_message[:100]}..."
-        )
+        # Create enhanced agent response with rich data if available
+        if metadata and 'full_result' in metadata:
+            # Use the full result data to create a rich response
+            full_result = metadata['full_result']
+            data = full_result.get('data', {})
+            
+            agent_response = AgentResponse(
+                agent_type="OrchestratorAgent",
+                response=assistant_response,
+                success=full_result.get('success', True),
+                formatted_results=data.get('formatted_results'),
+                summary=data.get('summary'),
+                insights=f"Response to: {user_message[:100]}...",
+                processing_time_ms=full_result.get('processing_time_ms'),
+                execution_time_ms=full_result.get('execution_time_ms')
+            )
+        else:
+            # Create simple agent response from assistant message
+            agent_response = AgentResponse(
+                agent_type="OrchestratorAgent",
+                response=assistant_response,
+                success=True,
+                summary=assistant_response,
+                insights=f"Response to: {user_message[:100]}..."
+            )
         
         # Get current conversation turn
         existing_entries = self.chat_logger.get_chat_log_entries_by_session(session_id, user_id)
