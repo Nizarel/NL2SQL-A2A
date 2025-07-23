@@ -3,11 +3,13 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 import uuid
 
+
 class FormattedResults(BaseModel):
     status: str
     headers: List[str]
     rows: List[Dict[str, Any]]
     total_rows: int
+
 
 class LogTokens(BaseModel):
     """Token usage tracking for agent responses"""
@@ -16,6 +18,7 @@ class LogTokens(BaseModel):
     input_cost: float = 0.0
     output_cost: float = 0.0
     total_tokens: int = 0
+
 
 class AgentResponse(BaseModel):
     agent_type: str
@@ -37,6 +40,79 @@ class AgentResponse(BaseModel):
         if 'timestamp' in data and isinstance(data['timestamp'], datetime):
             data['timestamp'] = data['timestamp'].isoformat()
         return data
+
+
+class Session(BaseModel):
+    """Session model for Cosmos DB storage with hierarchical partitioning"""
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    session_name: Optional[str] = None
+    is_active: bool = True
+    session_metadata: Dict[str, Any] = Field(default_factory=dict)
+    
+    @property
+    def id(self) -> str:
+        """Use session_id as the document id for Cosmos DB"""
+        return self.session_id
+    
+    def model_dump(self, **kwargs):
+        """Custom model_dump method to handle datetime serialization"""
+        data = super().model_dump(**kwargs)
+        for field in ['created_at', 'last_activity']:
+            if field in data and data[field] is not None:
+                if isinstance(data[field], datetime):
+                    data[field] = data[field].isoformat()
+        return data
+
+
+class Message(BaseModel):
+    """Message model for chat conversations with hierarchical partitioning"""
+    message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str
+    user_id: str
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    @property
+    def id(self) -> str:
+        """Use message_id as the document id for Cosmos DB"""
+        return self.message_id
+    
+    def model_dump(self, **kwargs):
+        """Custom model_dump method to handle datetime serialization"""
+        data = super().model_dump(**kwargs)
+        if 'timestamp' in data and isinstance(data['timestamp'], datetime):
+            data['timestamp'] = data['timestamp'].isoformat()
+        return data
+
+
+class CacheItem(BaseModel):
+    """Cache item model for vector embeddings and other cached data"""
+    key: str
+    value: str  # JSON serialized value
+    embedding: Optional[List[float]] = None  # Vector embedding array for /embedding path
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: Optional[datetime] = None
+    
+    @property
+    def id(self) -> str:
+        """Use key as the document id for Cosmos DB"""
+        return self.key
+    
+    def model_dump(self, **kwargs):
+        """Custom model_dump method to handle datetime serialization"""
+        data = super().model_dump(**kwargs)
+        for field in ['created_at', 'expires_at']:
+            if field in data and data[field] is not None:
+                if isinstance(data[field], datetime):
+                    data[field] = data[field].isoformat()
+        return data
+
 
 class UserSession(BaseModel):
     """User session model for Cosmos DB storage"""
