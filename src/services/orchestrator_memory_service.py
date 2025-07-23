@@ -16,7 +16,11 @@ import json
 from pydantic import BaseModel, Field
 
 from .cosmos_db_service import CosmosDbService, CosmosDbConfig
-from Models.agent_response import Session, Message, CacheItem, AgentResponse
+from Models.agent_response import (
+    Session, Message, CacheItem, AgentResponse, FormattedResults,
+    ConversationLog, ConversationPerformance, ConversationMetadata, 
+    WorkflowContext, BusinessAnalytics
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +60,14 @@ class SimilarQuery(BaseModel):
 
 class OrchestratorMemoryService:
     """
-    Memory service for the NL2SQL orchestrator that provides:
+    Enhanced orchestrator memory service with conversation logging and intelligent caching.
+    
+    This service provides:
     - Session and conversation management
-    - Query history and result caching
-    - Semantic similarity search for query reuse
-    - Context-aware query processing
+    - Business-focused conversation logging
+    - Intelligent semantic caching
+    - User analytics and insights
+    - Query complexity assessment
     """
     
     def __init__(self, cosmos_service: CosmosDbService):
@@ -72,6 +79,7 @@ class OrchestratorMemoryService:
         """
         self.cosmos_service = cosmos_service
         self._embedding_cache = {}  # In-memory cache for embeddings
+        self._current_workflows: Dict[str, WorkflowContext] = {}  # Active workflow tracking
         
     @classmethod
     async def create_from_config(cls, config: CosmosDbConfig = None) -> 'OrchestratorMemoryService':
@@ -404,6 +412,652 @@ class OrchestratorMemoryService:
         except Exception as e:
             logger.error(f"Error getting user stats: {str(e)}")
             return {"error": str(e)}
+    
+    # ======================================
+    # Enhanced Conversation Methods
+    # ======================================
+    
+    async def start_workflow_session(self, user_id: str, user_input: str, session_id: str = None) -> WorkflowContext:
+        """
+        Start a new workflow session and return context for tracking.
+        
+        Args:
+            user_id: User identifier
+            user_input: User's natural language query
+            session_id: Optional existing session ID, will create new if not provided
+            
+        Returns:
+            WorkflowContext for tracking the workflow
+        """
+        try:
+            # Get or create active session
+            if session_id:
+                # Check if session exists, create if not
+                existing_sessions = await self.get_user_sessions(user_id)
+                session_exists = any(s.session_id == session_id for s in existing_sessions)
+                
+                if not session_exists:
+                    # Create session record for provided session_id
+                    session = Session(
+                        session_id=session_id,
+                        user_id=user_id,
+                        session_name=f"NL2SQL Session {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        created_at=datetime.now(timezone.utc)
+                    )
+                    await self.cosmos_service.insert_session_async(user_id, session)
+                    logger.info(f"Created new session record for provided session_id: {session_id}")
+                
+                active_session_id = session_id
+            else:
+                # Get or create active session
+                sessions = await self.get_user_sessions(user_id)
+                active_session = None
+                
+                for session in sessions:
+                    if session.is_active:
+                        active_session = session
+                        break
+                
+                if not active_session:
+                    # Create new session
+                    active_session = await self.create_session(
+                        user_id=user_id,
+                        session_title=f"NL2SQL Session {datetime.now().strftime('%H:%M')}"
+                    )
+                
+                active_session_id = active_session.session_id
+            
+            # Create workflow context
+            context = WorkflowContext(
+                user_id=user_id,
+                session_id=active_session_id,
+                user_input=user_input,
+                conversation_turn=await self._get_next_conversation_turn(user_id, active_session_id)
+            )
+            
+            # Store in memory for active tracking
+            self._current_workflows[context.workflow_id] = context
+            
+            logger.info(f"Started workflow session for user {user_id}, workflow {context.workflow_id}")
+            return context
+            
+        except Exception as e:
+            logger.error(f"Error starting workflow session: {str(e)}")
+            raise
+    
+    async def update_workflow_stage(self, workflow_id: str, stage: str, result: Dict[str, Any]) -> None:
+        """
+        Update a specific workflow stage with results.
+        
+        Args:
+            workflow_id: Workflow identifier
+            stage: Stage name (schema_analysis, sql_generation, execution, summarization)
+            result: Stage result data
+        """
+        try:
+            if workflow_id not in self._current_workflows:
+                logger.warning(f"Workflow context not found: {workflow_id}")
+                return
+            
+            context = self._current_workflows[workflow_id]
+            setattr(context, stage, result)
+            
+            # Track cache hits
+            if result.get("metadata", {}).get("cache_hit"):
+                cache_type = result.get("metadata", {}).get("cache_type", "unknown")
+                context.cache_hits.append(f"{stage}_{cache_type}")
+            
+            logger.debug(f"Updated workflow {workflow_id} stage {stage}")
+            
+        except Exception as e:
+            logger.error(f"Error updating workflow stage: {str(e)}")
+    
+    async def complete_workflow_with_conversation_log(self, workflow_id: str) -> Dict[str, Any]:
+        """
+        Complete workflow and store business-focused conversation log.
+        
+        Args:
+            workflow_id: Workflow identifier
+            
+        Returns:
+            Completion summary with performance metrics
+        """
+        try:
+            if workflow_id not in self._current_workflows:
+                logger.warning(f"Workflow context not found: {workflow_id}")
+                return {"error": "Workflow not found"}
+            
+            context = self._current_workflows[workflow_id]
+            
+            # Calculate total processing time
+            total_time = (datetime.now(timezone.utc) - context.timestamp).total_seconds() * 1000
+            context.total_processing_time_ms = int(total_time)
+            
+            # Extract business-focused results
+            formatted_results = self._extract_formatted_results(context)
+            agent_response = self._create_business_agent_response(context)
+            
+            # Create conversation performance metrics
+            performance = ConversationPerformance(
+                processing_time_ms=context.total_processing_time_ms,
+                cache_hits=context.cache_hits,
+                success=context.summarization is not None and context.summarization.get("success", False),
+                query_complexity=self._assess_query_complexity(context.user_input),
+                cache_efficiency=len(context.cache_hits) / 4.0  # 4 possible stages
+            )
+            
+            # Create conversation metadata
+            metadata = ConversationMetadata(
+                conversation_type=self._categorize_query(context.user_input),
+                result_quality=self._assess_result_quality(context),
+                follow_up_suggested=self._should_suggest_followup(agent_response),
+                conversation_turn=context.conversation_turn,
+                workflow_id=workflow_id
+            )
+            
+            # Create and store conversation log
+            conversation_log = ConversationLog(
+                user_id=context.user_id,
+                session_id=context.session_id,
+                user_input=context.user_input,
+                formatted_results=formatted_results,
+                agent_response=agent_response,
+                performance=performance,
+                metadata=metadata
+            )
+            
+            # Store conversation log in Cosmos DB
+            await self._store_conversation_log(conversation_log)
+            
+            # Clean up memory
+            del self._current_workflows[workflow_id]
+            
+            completion_summary = {
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_log.id,
+                "total_time_ms": context.total_processing_time_ms,
+                "cache_hits": context.cache_hits,
+                "cache_efficiency": performance.cache_efficiency,
+                "query_complexity": performance.query_complexity,
+                "conversation_type": metadata.conversation_type,
+                "success": performance.success
+            }
+            
+            logger.info(f"Completed workflow {workflow_id} with conversation log {conversation_log.id}")
+            return completion_summary
+            
+        except Exception as e:
+            logger.error(f"Error completing workflow: {str(e)}")
+            # Clean up memory even on error
+            if workflow_id in self._current_workflows:
+                del self._current_workflows[workflow_id]
+            return {"error": str(e)}
+    
+    async def complete_workflow_session(self, workflow_context, formatted_results=None, 
+                                      agent_response=None, sql_query=None, processing_time_ms=None):
+        """
+        Complete a workflow session with conversation logging - simplified interface for orchestrator
+        
+        Args:
+            workflow_context: The workflow context from start_workflow_session
+            formatted_results: FormattedResults object
+            agent_response: AgentResponse object  
+            sql_query: Generated SQL query
+            processing_time_ms: Processing time in milliseconds
+            
+        Returns:
+            ConversationLog object if successful, None if failed
+        """
+        try:
+            # Update workflow context with provided data (storing in workflow stages)
+            if sql_query:
+                workflow_context.sql_generation = {"sql_query": sql_query}
+            if formatted_results:
+                workflow_context.execution = {"formatted_results": formatted_results.model_dump() if hasattr(formatted_results, 'model_dump') else str(formatted_results)}
+            if agent_response:
+                workflow_context.summarization = {"agent_response": agent_response.model_dump() if hasattr(agent_response, 'model_dump') else str(agent_response)}
+            if processing_time_ms:
+                workflow_context.total_processing_time_ms = processing_time_ms
+            
+            # Create cache entry for the query-result pair
+            await self._create_cache_entry_from_workflow(workflow_context, formatted_results, agent_response, sql_query, processing_time_ms)
+            
+            # Complete the workflow using existing method
+            completion_result = await self.complete_workflow_with_conversation_log(workflow_context.workflow_id)
+            
+            # Return the conversation log if successful
+            if "conversation_id" in completion_result and completion_result["conversation_id"]:
+                # Create a conversation log object for return
+                from Models.agent_response import ConversationLog, ConversationPerformance, ConversationMetadata
+                
+                conversation_log = ConversationLog(
+                    id=completion_result["conversation_id"],
+                    user_id=workflow_context.user_id,
+                    session_id=workflow_context.session_id,
+                    user_input=workflow_context.user_input,
+                    formatted_results=formatted_results,
+                    agent_response=agent_response,
+                    performance=ConversationPerformance(
+                        processing_time_ms=processing_time_ms or 0,
+                        success=True,
+                        query_complexity="medium",
+                        cache_efficiency=0.5
+                    ),
+                    metadata=ConversationMetadata(
+                        conversation_type="nl2sql_workflow",
+                        result_quality="high",
+                        workflow_id=workflow_context.workflow_id
+                    )
+                )
+                return conversation_log
+            else:
+                logger.warning(f"No conversation ID in completion result: {completion_result}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error completing workflow session: {str(e)}")
+            return None
+    
+    async def _create_cache_entry_from_workflow(self, workflow_context, formatted_results=None, 
+                                              agent_response=None, sql_query=None, processing_time_ms=None):
+        """
+        Create cache entry from workflow completion data.
+        
+        Args:
+            workflow_context: The workflow context
+            formatted_results: FormattedResults object
+            agent_response: AgentResponse object
+            sql_query: Generated SQL query
+            processing_time_ms: Processing time in milliseconds
+        """
+        try:
+            # Generate proper embedding using Azure OpenAI text-embedding-3-small
+            query_text = workflow_context.user_input
+            embedding = await self._generate_text_embedding(query_text)
+            
+            if not embedding:
+                logger.warning(f"Failed to generate embedding for workflow {workflow_context.workflow_id}")
+                return
+            
+            # Create cache key
+            cache_key = f"workflow_result_{workflow_context.workflow_id}"
+            
+            # Prepare metadata
+            metadata = {
+                "type": "workflow_result",
+                "user_id": workflow_context.user_id,
+                "session_id": workflow_context.session_id,
+                "workflow_id": workflow_context.workflow_id,
+                "sql_query": sql_query,
+                "success": formatted_results.success if formatted_results else True,
+                "processing_time_ms": processing_time_ms or 0,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            # Add agent response info if available
+            if agent_response:
+                metadata["agent_type"] = agent_response.agent_type
+                metadata["confidence_level"] = agent_response.confidence_level
+                metadata["key_insights"] = agent_response.key_insights[:3] if agent_response.key_insights else []
+            
+            # Add results info if available
+            if formatted_results:
+                metadata["total_rows"] = getattr(formatted_results, 'total_rows', 0)
+                metadata["result_success"] = getattr(formatted_results, 'success', False)
+            
+            # Store in cache
+            await self.cosmos_service.set_vector_embedding_async(
+                key=cache_key,
+                embedding=embedding,
+                text=f"Query: {query_text} -> SQL: {sql_query or 'No SQL'}",
+                metadata=metadata
+            )
+            
+            logger.info(f"Created cache entry for workflow {workflow_context.workflow_id}")
+            
+        except Exception as e:
+            logger.error(f"Error creating cache entry: {str(e)}")
+            # Don't fail the workflow completion due to cache errors
+
+    async def _generate_text_embedding(self, text: str) -> List[float]:
+        """
+        Generate text embedding using Azure OpenAI text-embedding-3-small.
+        
+        Args:
+            text: Text to generate embedding for
+            
+        Returns:
+            List of floats representing the embedding, or None if failed
+        """
+        try:
+            # Try to get the embedding service from a kernel if available
+            # This is a simplified approach - in production you might want to inject the service
+            import os
+            from semantic_kernel.connectors.ai.open_ai import AzureTextEmbedding
+            
+            # Load environment from .env file if not already loaded
+            try:
+                from dotenv import load_dotenv
+                from pathlib import Path
+                env_path = Path(__file__).parent.parent / ".env"
+                load_dotenv(env_path)
+            except ImportError:
+                # dotenv not available, continue with existing environment
+                pass
+            
+            # Get Azure OpenAI configuration
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_api_key = os.getenv("AZURE_OPENAI_API_KEY") 
+            azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+            azure_embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME")
+            
+            if not all([azure_endpoint, azure_api_key, azure_embedding_deployment]):
+                logger.warning("Azure OpenAI embedding configuration incomplete, using fallback embedding")
+                # Fallback to simple embedding for demo
+                return [float(hash(text + str(i)) % 1000) / 1000.0 for i in range(1536)]
+            
+            # Create embedding service
+            embedding_service = AzureTextEmbedding(
+                deployment_name=azure_embedding_deployment,
+                endpoint=azure_endpoint,
+                api_key=azure_api_key,
+                api_version=azure_api_version,
+                service_id="cache_embedding_service"
+            )
+            
+            # Generate embedding
+            embeddings = await embedding_service.generate_embeddings([text])
+            
+            if embeddings is not None and len(embeddings) > 0:
+                # Extract the embedding vector
+                embedding_data = embeddings[0]
+                
+                # Handle different possible return formats
+                if hasattr(embedding_data, 'data') and embedding_data.data:
+                    return list(embedding_data.data)
+                elif isinstance(embedding_data, (list, tuple)):
+                    return list(embedding_data)
+                elif hasattr(embedding_data, '__iter__'):  # Handle numpy arrays or similar
+                    return list(embedding_data)
+                else:
+                    logger.warning(f"Unexpected embedding format: {type(embedding_data)}")
+                    return None
+            else:
+                logger.warning("No embeddings returned from service")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error generating text embedding: {str(e)}")
+            # Fallback to simple embedding for demo purposes
+            return [float(hash(text + str(i)) % 1000) / 1000.0 for i in range(1536)]
+
+    async def get_user_conversation_history(self, user_id: str, session_id: str = None, limit: int = 20) -> List[ConversationLog]:
+        """
+        Get user's conversation history with business-focused logs.
+        
+        Args:
+            user_id: User identifier
+            session_id: Optional session filter
+            limit: Maximum conversations to return
+            
+        Returns:
+            List of conversation logs
+        """
+        try:
+            # Get messages from the user's sessions
+            if session_id:
+                messages = await self.get_session_context(user_id, session_id, limit)
+            else:
+                # Get recent sessions and their messages
+                sessions = await self.get_user_sessions(user_id)
+                all_messages = []
+                
+                for session in sessions[-5:]:  # Last 5 sessions
+                    session_messages = await self.get_session_context(user_id, session.session_id, limit // 5)
+                    all_messages.extend(session_messages)
+                
+                # Sort by timestamp and limit
+                all_messages.sort(key=lambda x: x.timestamp, reverse=True)
+                messages = all_messages[:limit]
+            
+            # Filter for conversation logs and convert
+            conversation_logs = []
+            for message in messages:
+                if message.role == "nl2sql_conversation":
+                    try:
+                        # Handle both structured data (new format) and JSON strings (legacy format)
+                        if isinstance(message.content, dict):
+                            content = message.content  # Already structured data
+                        else:
+                            content = json.loads(message.content)  # Legacy JSON string format
+                        
+                        log = ConversationLog(
+                            id=message.message_id,
+                            user_id=message.user_id,
+                            session_id=message.session_id,
+                            timestamp=message.timestamp,
+                            user_input=content.get("user_input", ""),
+                            formatted_results=FormattedResults(**content["formatted_results"]) if content.get("formatted_results") else None,
+                            agent_response=AgentResponse(**content["agent_response"]) if content.get("agent_response") else None,
+                            performance=ConversationPerformance(**content["performance"]) if content.get("performance") else ConversationPerformance(),
+                            metadata=ConversationMetadata(**content["metadata"]) if content.get("metadata") else ConversationMetadata()
+                        )
+                        conversation_logs.append(log)
+                    except (json.JSONDecodeError, KeyError, TypeError) as e:
+                        logger.warning(f"Failed to parse conversation log: {e}")
+                        continue
+            
+            return conversation_logs
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation history: {str(e)}")
+            return []
+    
+    async def get_user_analytics_enhanced(self, user_id: str, days: int = 7) -> BusinessAnalytics:
+        """
+        Get enhanced user analytics with business insights.
+        
+        Args:
+            user_id: User identifier
+            days: Number of days to analyze
+            
+        Returns:
+            BusinessAnalytics with comprehensive metrics
+        """
+        try:
+            # Use Cosmos service directly to get analytics (more reliable than cross-session queries)
+            analytics = await self.cosmos_service.get_user_conversation_analytics_async(
+                user_id=user_id,
+                days=days
+            )
+            
+            # The Cosmos service returns BusinessAnalytics directly
+            return analytics
+            
+        except Exception as e:
+            logger.error(f"Error getting enhanced user analytics: {str(e)}")
+            # Return default analytics on error
+            return BusinessAnalytics(
+                user_id=user_id,
+                total_conversations=0,
+                successful_queries=0,
+                average_processing_time_ms=0.0,
+                average_response_time_ms=0.0,
+                most_common_query_types=[],
+                average_result_quality="low",
+                cache_efficiency=0.0,
+                query_complexity_distribution={"simple": 0, "medium": 0, "complex": 0},
+                conversation_type_distribution={},
+                most_common_insights=[],
+                recommended_actions=[],
+                time_period_days=days
+            )
+    
+    # ======================================
+    # Helper Methods for Conversation Processing
+    # ======================================
+    
+    async def _get_next_conversation_turn(self, user_id: str, session_id: str) -> int:
+        """Get the next conversation turn number for a session."""
+        try:
+            messages = await self.get_session_context(user_id, session_id, max_messages=100)
+            conversation_messages = [m for m in messages if m.role == "nl2sql_conversation"]
+            return len(conversation_messages) + 1
+        except Exception:
+            return 1
+    
+    def _extract_formatted_results(self, context: WorkflowContext) -> Optional[FormattedResults]:
+        """Extract formatted results from workflow context."""
+        try:
+            if (context.execution and 
+                context.execution.get("success") and 
+                "formatted_results" in context.execution.get("data", {})):
+                
+                exec_data = context.execution["data"]["formatted_results"]
+                return FormattedResults(
+                    success=True,
+                    headers=exec_data.get("headers", []),
+                    rows=exec_data.get("rows", []),
+                    total_rows=exec_data.get("total_rows", 0),
+                    chart_recommendations=exec_data.get("chart_recommendations", [])
+                )
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract formatted results: {e}")
+            return None
+    
+    def _create_business_agent_response(self, context: WorkflowContext) -> Optional[AgentResponse]:
+        """Create business-focused agent response from workflow context."""
+        try:
+            if context.summarization and context.summarization.get("success"):
+                summary_data = context.summarization.get("data", {})
+                
+                return AgentResponse(
+                    agent_type="orchestrator",
+                    response=summary_data.get("summary", "Analysis completed successfully."),
+                    success=True,
+                    processing_time_ms=context.total_processing_time_ms,
+                    executive_summary=summary_data.get("executive_summary", ""),
+                    key_insights=summary_data.get("key_insights", []),
+                    recommendations=summary_data.get("recommendations", []),
+                    confidence_level=summary_data.get("confidence_level", "medium")
+                )
+            
+            # Fallback response if no summarization
+            return AgentResponse(
+                agent_type="orchestrator",
+                response="Query processed successfully.",
+                success=context.execution is not None and context.execution.get("success", False),
+                processing_time_ms=context.total_processing_time_ms,
+                confidence_level="medium"
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to create agent response: {e}")
+            return None
+    
+    def _assess_query_complexity(self, user_input: str) -> str:
+        """Assess query complexity for analytics."""
+        complexity_indicators = {
+            "simple": ["show", "list", "what is", "how many", "get", "find"],
+            "medium": ["compare", "trend", "analyze", "group by", "top", "average", "sum"],
+            "complex": ["correlation", "forecast", "predict", "advanced", "complex", "join", "subquery"]
+        }
+        
+        user_lower = user_input.lower()
+        
+        for level in ["complex", "medium", "simple"]:  # Check complex first
+            if any(indicator in user_lower for indicator in complexity_indicators[level]):
+                return level
+        
+        return "simple"
+    
+    def _categorize_query(self, user_input: str) -> str:
+        """Categorize the type of business query."""
+        categories = {
+            "sales_analytics": ["sales", "revenue", "income", "profit", "sold", "selling"],
+            "customer_analytics": ["customer", "client", "user", "buyer", "consumer"],
+            "product_analytics": ["product", "item", "inventory", "stock", "catalog"],
+            "financial_analytics": ["financial", "cost", "expense", "budget", "finance"],
+            "operational_analytics": ["operational", "process", "efficiency", "performance", "operations"]
+        }
+        
+        user_lower = user_input.lower()
+        
+        for category, keywords in categories.items():
+            if any(keyword in user_lower for keyword in keywords):
+                return category
+        
+        return "general_analytics"
+    
+    def _assess_result_quality(self, context: WorkflowContext) -> str:
+        """Assess the quality of results based on workflow success."""
+        if not context.execution or not context.execution.get("success"):
+            return "low"
+        
+        if context.summarization and context.summarization.get("success"):
+            summary_data = context.summarization.get("data", {})
+            if summary_data.get("key_insights") and summary_data.get("recommendations"):
+                return "high"
+            return "medium"
+        
+        return "medium"
+    
+    def _should_suggest_followup(self, agent_response: Optional[AgentResponse]) -> bool:
+        """Determine if follow-up suggestions should be made."""
+        if not agent_response:
+            return False
+        
+        return (len(agent_response.recommendations) > 0 or 
+                len(agent_response.key_insights) > 1 or
+                agent_response.confidence_level == "high")
+    
+    async def _store_conversation_log(self, conversation_log: ConversationLog) -> None:
+        """Store conversation log in Cosmos DB with structured data format."""
+        try:
+            # Convert to structured data format for storage (similar to API endpoint)
+            conversation_data = conversation_log.to_cosmos_dict()
+            
+            # Apply the same make_json_serializable logic as the API endpoint
+            def make_json_serializable(obj):
+                """Convert complex objects to JSON-serializable format while preserving structure."""
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif hasattr(obj, '__dict__'):
+                    return {key: make_json_serializable(value) for key, value in obj.__dict__.items()}
+                elif hasattr(obj, '_asdict'):  # namedtuple
+                    return make_json_serializable(obj._asdict())
+                elif isinstance(obj, dict):
+                    return {key: make_json_serializable(value) for key, value in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [make_json_serializable(item) for item in obj]
+                elif isinstance(obj, (int, float, str, bool, type(None))):
+                    return obj
+                else:
+                    return str(obj)
+            
+            # Convert to properly structured data (not JSON string)
+            structured_data = make_json_serializable(conversation_data)
+            
+            message = Message(
+                session_id=conversation_log.session_id,
+                user_id=conversation_log.user_id,
+                role="nl2sql_conversation",
+                content=structured_data,  # Store as structured data, not JSON string
+                timestamp=conversation_log.timestamp,
+                metadata={
+                    "conversation_id": conversation_log.id,
+                    "workflow_id": conversation_log.metadata.workflow_id,
+                    "conversation_turn": conversation_log.metadata.conversation_turn,
+                    "conversation_type": conversation_log.metadata.conversation_type
+                }
+            )
+            
+            await self.cosmos_service.insert_message_async(conversation_log.user_id, message)
+            
+        except Exception as e:
+            logger.error(f"Failed to store conversation log: {e}")
+            raise
     
     async def cleanup_old_data(self, days_to_keep: int = 30) -> Dict[str, int]:
         """

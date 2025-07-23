@@ -5,7 +5,7 @@ Provides session and user tracking with chat logs and caching.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
 
@@ -15,7 +15,10 @@ from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFo
 from azure.identity.aio import DefaultAzureCredential
 from pydantic import BaseModel
 
-from Models.agent_response import ChatLogEntry, UserSession, AgentResponse, Session, Message, CacheItem
+from Models.agent_response import (
+    ChatLogEntry, UserSession, AgentResponse, Session, Message, CacheItem,
+    ConversationLog, BusinessAnalytics
+)
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +589,359 @@ class CosmosDbService:
         except CosmosHttpResponseError as e:
             logger.error(f"Error deleting cache item: {str(e)}")
             raise
+
+    # ======================================
+    # Conversation Support Methods
+    # ======================================
+
+    async def get_user_conversations_async(
+        self, 
+        user_id: str, 
+        session_id: str = None,
+        limit: int = 20,
+        start_time: datetime = None,
+        end_time: datetime = None
+    ) -> List[ConversationLog]:
+        """
+        Retrieve conversation logs for a user with optional filtering.
+        
+        Args:
+            user_id: User identifier
+            session_id: Optional session filter
+            limit: Maximum conversations to return
+            start_time: Optional start time filter
+            end_time: Optional end time filter
+            
+        Returns:
+            List of conversation logs
+        """
+        try:
+            conversations = []
+            
+            if session_id:
+                # Query specific session with hierarchical partition key
+                conditions = ["c.role = 'nl2sql_conversation'"]
+                parameters = []
+                
+                if start_time:
+                    conditions.append("c.timestamp >= @start_time")
+                    parameters.append({"name": "@start_time", "value": start_time.isoformat()})
+                
+                if end_time:
+                    conditions.append("c.timestamp <= @end_time")
+                    parameters.append({"name": "@end_time", "value": end_time.isoformat()})
+                
+                where_clause = " AND ".join(conditions)
+                
+                query = f"""
+                    SELECT TOP {limit} * FROM c 
+                    WHERE {where_clause}
+                    ORDER BY c.timestamp DESC
+                """
+                
+                # Use hierarchical partition key [user_id, session_id]
+                items = self._chat_container.query_items(
+                    query=query,
+                    parameters=parameters,
+                    partition_key=[user_id, session_id]
+                )
+                
+                async for item in items:
+                    try:
+                        # Handle both structured data (new format) and JSON strings (legacy format)
+                        if isinstance(item["content"], dict):
+                            conversation_data = item["content"]  # Already structured data
+                        else:
+                            import json
+                            conversation_data = json.loads(item["content"])  # Legacy JSON string format
+                        
+                        conversation = ConversationLog.from_cosmos_dict(conversation_data)
+                        conversations.append(conversation)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse conversation log: {e}")
+                        continue
+            else:
+                # For user-wide queries without session, enumerate all user sessions
+                logger.debug(f"Retrieving conversations for user {user_id} across all sessions")
+                
+                # Get all sessions for the user
+                sessions = await self.get_sessions_async(user_id)
+                logger.debug(f"Found {len(sessions)} sessions for user {user_id}")
+                
+                if not sessions:
+                    logger.warning(f"No sessions found for user {user_id}")
+                    return []
+                
+                # Query each session for conversations
+                for session in sessions:
+                    logger.debug(f"Querying session {session.session_id} for conversations")
+                    # Build query for this specific session
+                    conditions = ["c.role = 'nl2sql_conversation'"]
+                    parameters = []
+                    
+                    if start_time:
+                        conditions.append("c.timestamp >= @start_time")
+                        parameters.append({"name": "@start_time", "value": start_time.isoformat()})
+                    
+                    if end_time:
+                        conditions.append("c.timestamp <= @end_time")
+                        parameters.append({"name": "@end_time", "value": end_time.isoformat()})
+                    
+                    where_clause = " AND ".join(conditions)
+                    
+                    query = f"""
+                        SELECT * FROM c 
+                        WHERE {where_clause}
+                        ORDER BY c.timestamp DESC
+                    """
+                    
+                    # Use hierarchical partition key [user_id, session_id]
+                    try:
+                        items = self._chat_container.query_items(
+                            query=query,
+                            parameters=parameters,
+                            partition_key=[user_id, session.session_id]
+                        )
+                        
+                        session_count = 0
+                        async for item in items:
+                            try:
+                                # Handle both structured data (new format) and JSON strings (legacy format)
+                                if isinstance(item["content"], dict):
+                                    conversation_data = item["content"]  # Already structured data
+                                else:
+                                    import json
+                                    conversation_data = json.loads(item["content"])  # Legacy JSON string format
+                                
+                                conversation = ConversationLog.from_cosmos_dict(conversation_data)
+                                conversations.append(conversation)
+                                session_count += 1
+                                
+                                # Apply limit during collection to avoid memory issues
+                                if len(conversations) >= limit:
+                                    break
+                            except Exception as e:
+                                logger.warning(f"Failed to parse conversation log: {e}")
+                                continue
+                        
+                        logger.debug(f"Retrieved {session_count} conversations from session {session.session_id}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to query session {session.session_id}: {e}")
+                        continue
+                
+                # Sort by timestamp and apply final limit
+                conversations.sort(key=lambda c: c.timestamp, reverse=True)
+                conversations = conversations[:limit]
+            
+            logger.debug(f"Retrieved {len(conversations)} conversations for user {user_id}")
+            return conversations
+            
+        except Exception as e:
+            logger.error(f"Error retrieving user conversations: {str(e)}")
+            return []
+
+    async def get_user_conversation_analytics_async(
+        self, 
+        user_id: str,
+        days: int = 30
+    ) -> BusinessAnalytics:
+        """
+        Get comprehensive analytics for a user's conversations.
+        
+        Args:
+            user_id: User identifier
+            days: Number of days to analyze
+            
+        Returns:
+            Business analytics summary
+        """
+        try:
+            # Calculate date range properly using timedelta
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=days)
+            
+            # Get conversations in date range
+            conversations = await self.get_user_conversations_async(
+                user_id=user_id,
+                start_time=start_time,
+                end_time=end_time,
+                limit=1000  # High limit for analytics
+            )
+            
+            if not conversations:
+                return BusinessAnalytics(
+                    user_id=user_id,
+                    total_conversations=0,
+                    successful_queries=0,
+                    average_processing_time_ms=0.0,
+                    average_response_time_ms=0.0,
+                    cache_efficiency=0.0,
+                    query_complexity_distribution={"simple": 0, "medium": 0, "complex": 0},
+                    conversation_type_distribution={},
+                    average_result_quality="low",
+                    most_common_insights=[],
+                    recommended_actions=[],
+                    time_period_days=days
+                )
+            
+            # Calculate analytics
+            total_conversations = len(conversations)
+            successful_queries = sum(1 for c in conversations if c.performance.success)
+            
+            # Response time analysis
+            response_times = [c.performance.processing_time_ms for c in conversations if c.performance.processing_time_ms > 0]
+            avg_response_time = sum(response_times) / len(response_times) if response_times else 0.0
+            
+            # Cache efficiency analysis
+            cache_efficiencies = [c.performance.cache_efficiency for c in conversations]
+            avg_cache_efficiency = sum(cache_efficiencies) / len(cache_efficiencies) if cache_efficiencies else 0.0
+            
+            # Query complexity distribution
+            complexity_counts = {"simple": 0, "medium": 0, "complex": 0}
+            for conversation in conversations:
+                complexity = conversation.performance.query_complexity
+                if complexity in complexity_counts:
+                    complexity_counts[complexity] += 1
+            
+            # Conversation type distribution
+            type_counts = {}
+            for conversation in conversations:
+                conv_type = conversation.metadata.conversation_type
+                type_counts[conv_type] = type_counts.get(conv_type, 0) + 1
+            
+            # Result quality assessment
+            quality_scores = {"high": 3, "medium": 2, "low": 1}
+            total_quality_score = 0
+            quality_count = 0
+            
+            for conversation in conversations:
+                if conversation.metadata.result_quality in quality_scores:
+                    total_quality_score += quality_scores[conversation.metadata.result_quality]
+                    quality_count += 1
+            
+            if quality_count > 0:
+                avg_quality_score = total_quality_score / quality_count
+                if avg_quality_score >= 2.5:
+                    avg_result_quality = "high"
+                elif avg_quality_score >= 1.5:
+                    avg_result_quality = "medium"
+                else:
+                    avg_result_quality = "low"
+            else:
+                avg_result_quality = "medium"
+            
+            # Extract common insights
+            all_insights = []
+            for conversation in conversations:
+                if conversation.agent_response and conversation.agent_response.key_insights:
+                    all_insights.extend(conversation.agent_response.key_insights)
+            
+            # Get most common insights (simplified)
+            insight_counts = {}
+            for insight in all_insights:
+                # Simple keyword extraction
+                words = insight.lower().split()
+                for word in words:
+                    if len(word) > 4:  # Only consider meaningful words
+                        insight_counts[word] = insight_counts.get(word, 0) + 1
+            
+            most_common_insights = sorted(insight_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+            most_common_insights = [insight[0] for insight in most_common_insights]
+            
+            # Generate recommended actions based on patterns
+            recommended_actions = []
+            if avg_cache_efficiency < 0.5:
+                recommended_actions.append("Consider optimizing query patterns to improve cache utilization")
+            if avg_response_time > 5000:  # > 5 seconds
+                recommended_actions.append("Review query complexity to improve response times")
+            if successful_queries / total_conversations < 0.8:
+                recommended_actions.append("Investigate query failures to improve success rate")
+            
+            return BusinessAnalytics(
+                user_id=user_id,
+                total_conversations=total_conversations,
+                successful_queries=successful_queries,
+                average_processing_time_ms=avg_response_time,
+                average_response_time_ms=avg_response_time,  # Same value for compatibility
+                cache_efficiency=avg_cache_efficiency,
+                query_complexity_distribution=complexity_counts,
+                conversation_type_distribution=type_counts,
+                average_result_quality=avg_result_quality,
+                most_common_insights=most_common_insights,
+                recommended_actions=recommended_actions,
+                time_period_days=days
+            )
+            
+        except Exception as e:
+            logger.error(f"Error calculating user analytics: {str(e)}")
+            # Return empty analytics on error
+            return BusinessAnalytics(
+                user_id=user_id,
+                total_conversations=0,
+                successful_queries=0,
+                average_processing_time_ms=0.0,
+                average_response_time_ms=0.0,
+                cache_efficiency=0.0,
+                query_complexity_distribution={"simple": 0, "medium": 0, "complex": 0},
+                conversation_type_distribution={},
+                average_result_quality="low",
+                most_common_insights=[],
+                recommended_actions=["Error calculating analytics - please try again"],
+                time_period_days=days
+            )
+
+    async def cleanup_old_conversations_async(self, days_to_keep: int = 30) -> Dict[str, int]:
+        """
+        Clean up conversation logs older than specified days.
+        
+        Args:
+            days_to_keep: Number of days to keep conversations
+            
+        Returns:
+            Statistics about cleaned data
+        """
+        try:
+            from datetime import timedelta
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
+            
+            # Query for old conversations using cross-partition query
+            query = """
+                SELECT c.id, c.user_id, c.session_id FROM c 
+                WHERE c.role = 'nl2sql_conversation' 
+                AND c.timestamp < @cutoff_date
+            """
+            
+            items_to_delete = []
+            items = self._chat_container.query_items(
+                query=query,
+                parameters=[{"name": "@cutoff_date", "value": cutoff_date.isoformat()}]
+            )
+            
+            async for item in items:
+                items_to_delete.append((item["id"], item["user_id"], item["session_id"]))
+            
+            # Delete old conversations using hierarchical partition key
+            deleted_count = 0
+            for item_id, user_id, session_id in items_to_delete:
+                try:
+                    await self._chat_container.delete_item(
+                        item=item_id,
+                        partition_key=[user_id, session_id]  # Hierarchical partition key
+                    )
+                    deleted_count += 1
+                except CosmosResourceNotFoundError:
+                    # Already deleted
+                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to delete conversation {item_id}: {e}")
+            
+            logger.info(f"Cleaned up {deleted_count} old conversations")
+            return {"conversations_deleted": deleted_count}
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up conversations: {str(e)}")
+            return {"conversations_deleted": 0, "error": str(e)}
 
 
     @staticmethod

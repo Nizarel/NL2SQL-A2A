@@ -1,6 +1,7 @@
 """
 Orchestrator Agent - Coordinates multi-agent workflow using Semantic Kernel 1.34.0
 Sequential Pattern: SchemaAnalyst → SQLGenerator → Executor → Summarizer
+Enhanced with conversation logging and session tracking
 """
 
 import re
@@ -20,6 +21,8 @@ from .sql_generator_agent import SQLGeneratorAgent
 from .executor_agent import ExecutorAgent
 from .summarizing_agent import SummarizingAgent
 from .schema_analyst_agent import SchemaAnalystAgent
+from services.orchestrator_memory_service import OrchestratorMemoryService
+from Models.agent_response import FormattedResults, AgentResponse
 
 
 class OrchestratorAgent(BaseAgent):
@@ -29,11 +32,13 @@ class OrchestratorAgent(BaseAgent):
     2. SQLGeneratorAgent: Converts natural language to SQL using optimized context
     3. ExecutorAgent: Executes the generated SQL query
     4. SummarizingAgent: Analyzes results and generates insights
+    
+    Enhanced with automatic conversation logging and session tracking.
     """
     
     def __init__(self, kernel: Kernel, schema_analyst: SchemaAnalystAgent, 
                  sql_generator: SQLGeneratorAgent, executor: ExecutorAgent, 
-                 summarizer: SummarizingAgent):
+                 summarizer: SummarizingAgent, memory_service: Optional[OrchestratorMemoryService] = None):
         super().__init__(kernel, "OrchestratorAgent")
         
         # Store agent references
@@ -41,6 +46,9 @@ class OrchestratorAgent(BaseAgent):
         self.sql_generator = sql_generator
         self.executor = executor
         self.summarizer = summarizer
+        
+        # Memory service for conversation logging
+        self.memory_service = memory_service
         
         # Initialize Semantic Kernel AgentGroupChat for orchestration
         self.agent_group_chat: Optional[AgentGroupChat] = None
@@ -136,27 +144,34 @@ WHAT YOU MUST NOT DO:
             
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute the sequential multi-agent workflow
+        Execute the sequential multi-agent workflow with conversation logging
         
         Args:
             input_data: Dictionary containing:
                 - question: Natural language question
+                - user_id: User identifier (for conversation logging)
+                - session_id: Session identifier (for conversation logging)
                 - context: Optional additional context
                 - execute: Whether to execute generated SQL
                 - limit: Row limit for results
                 - include_summary: Whether to generate summary
+                - enable_conversation_logging: Whether to log conversations (default: True)
                 
         Returns:
             Dictionary containing complete workflow results
         """
         workflow_start_time = time.time()
+        workflow_context = None
         
         try:
             question = input_data.get("question", "")
+            user_id = input_data.get("user_id", "default_user")
+            session_id = input_data.get("session_id", "default_session")
             context = input_data.get("context", "")
             execute = input_data.get("execute", True)
             limit = input_data.get("limit", 100)
             include_summary = input_data.get("include_summary", True)
+            enable_conversation_logging = input_data.get("enable_conversation_logging", True)
             
             if not question:
                 return self._create_result(
@@ -165,6 +180,19 @@ WHAT YOU MUST NOT DO:
                 )
             
             print(f"🎯 Orchestrating workflow for: {question}")
+            
+            # Start workflow session for conversation logging
+            if self.memory_service and enable_conversation_logging:
+                try:
+                    workflow_context = await self.memory_service.start_workflow_session(
+                        user_id=user_id,
+                        user_input=question,
+                        session_id=session_id
+                    )
+                    print(f"📝 Started workflow session: {workflow_context.workflow_id}")
+                except Exception as e:
+                    print(f"⚠️ Failed to start workflow session: {e}")
+                    workflow_context = None
             
             # Determine orchestration strategy based on concurrency
             # SK AgentGroupChat doesn't handle concurrency well, so use manual for concurrent requests
@@ -187,7 +215,24 @@ WHAT YOU MUST NOT DO:
                     print("⚠️ SK orchestration busy, using manual sequential orchestration")
                 else:
                     print("⚠️ Using manual sequential orchestration")
-                result = await self._execute_manual_sequential_workflow(input_data)
+                result = await self._execute_manual_sequential_workflow(input_data, workflow_context, enable_conversation_logging)
+            
+            # Complete workflow session with conversation logging
+            if self.memory_service and enable_conversation_logging and workflow_context and result.get("success"):
+                try:
+                    conversation_log = await self._complete_workflow_with_logging(
+                        workflow_context=workflow_context,
+                        result=result,
+                        question=question,
+                        workflow_time=time.time() - workflow_start_time
+                    )
+                    
+                    if conversation_log:
+                        result["conversation_log_id"] = conversation_log.id
+                        print(f"📝 Logged conversation: {conversation_log.id}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Failed to complete conversation logging: {e}")
             
             # Add workflow timing metadata
             if "metadata" not in result:
@@ -195,6 +240,9 @@ WHAT YOU MUST NOT DO:
             result["metadata"]["total_workflow_time"] = round(time.time() - workflow_start_time, 3)
             result["metadata"]["orchestration_pattern"] = "sequential"
             result["metadata"]["workflow_steps"] = self._get_workflow_steps(execute, include_summary)
+            result["metadata"]["conversation_logged"] = bool(
+                self.memory_service and enable_conversation_logging and workflow_context and result.get("success")
+            )
             
             return result
             
@@ -264,16 +312,16 @@ Each agent should complete their step and pass results to the next agent.
                 if "Unable to proceed while another agent is active" in str(sk_error):
                     print("⚠️ SK orchestration busy (another agent active), using manual orchestration")
                     self._sk_orchestration_active = False  # Reset the flag
-                    return await self._execute_manual_sequential_workflow(params)
+                    return await self._execute_manual_sequential_workflow(params, None, False)
                 else:
                     print(f"❌ SK orchestration error: {str(sk_error)}")
-                    return await self._execute_manual_sequential_workflow(params)
+                    return await self._execute_manual_sequential_workflow(params, None, False)
             except Exception as sk_error:
                 if "Unable to proceed while another agent is active" in str(sk_error):
                     print("🔄 SK orchestration busy, falling back to manual workflow")
                 else:
                     print(f"❌ SK orchestration error: {str(sk_error)}")
-                return await self._execute_manual_sequential_workflow(params)
+                return await self._execute_manual_sequential_workflow(params, None, False)
             
             # Parse and integrate results from all agents
             return await self._parse_sk_workflow_results(agent_responses, params)
@@ -281,9 +329,9 @@ Each agent should complete their step and pass results to the next agent.
         except Exception as e:
             print(f"❌ SK sequential workflow failed: {str(e)}")
             print("⚠️ Falling back to manual sequential orchestration")
-            return await self._execute_manual_sequential_workflow(params)
+            return await self._execute_manual_sequential_workflow(params, None, False)
     
-    async def _execute_manual_sequential_workflow(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_manual_sequential_workflow(self, params: Dict[str, Any], workflow_context=None, enable_conversation_logging=True) -> Dict[str, Any]:
         """
         Execute sequential workflow manually using direct agent calls with Schema Analyst integration
         """
@@ -304,6 +352,10 @@ Each agent should complete their step and pass results to the next agent.
                 "similarity_threshold": 0.85
             })
             workflow_results["schema_analysis"] = schema_analysis
+            
+            # Update workflow with schema analysis results
+            if self.memory_service and enable_conversation_logging and workflow_context:
+                await self.memory_service.update_workflow_stage(workflow_context.workflow_id, "schema_analysis", schema_analysis)
             
             if not schema_analysis["success"]:
                 print(f"⚠️ Schema analysis failed: {schema_analysis['error']}")
@@ -349,6 +401,10 @@ Each agent should complete their step and pass results to the next agent.
             generated_sql = sql_result["data"]["sql_query"]
             print(f"✅ SQL Generated: {generated_sql[:100]}...")
             
+            # Update workflow with SQL generation results
+            if self.memory_service and enable_conversation_logging and workflow_context:
+                await self.memory_service.update_workflow_stage(workflow_context.workflow_id, "sql_generation", sql_result)
+            
             # Step 2: SQL Execution (if requested)
             execution_result = None
             if params.get("execute", True):
@@ -359,6 +415,10 @@ Each agent should complete their step and pass results to the next agent.
                     "timeout": 30
                 })
                 workflow_results["execution"] = execution_result
+                
+                # Update workflow with execution results
+                if self.memory_service and enable_conversation_logging and workflow_context:
+                    await self.memory_service.update_workflow_stage(workflow_context.workflow_id, "execution", execution_result)
                 
                 if not execution_result["success"]:
                     return self._create_result(
@@ -385,6 +445,10 @@ Each agent should complete their step and pass results to the next agent.
                     "schema_analysis": schema_analysis["data"] if schema_analysis["success"] else None  # NEW: Pass analysis context
                 })
                 workflow_results["summarization"] = summarization_result
+                
+                # Update workflow with summarization results
+                if self.memory_service and enable_conversation_logging and workflow_context:
+                    await self.memory_service.update_workflow_stage(workflow_context.workflow_id, "summarization", summarization_result)
                 
                 if summarization_result["success"]:
                     print("✅ Summary and insights generated")
@@ -564,12 +628,12 @@ Each agent should complete their step and pass results to the next agent.
                 
             else:
                 print("⚠️ Could not extract SQL from SK responses, falling back to manual workflow")
-                return await self._execute_manual_sequential_workflow(params)
+                return await self._execute_manual_sequential_workflow(params, None, False)
                 
         except Exception as e:
             print(f"❌ SK result parsing failed: {str(e)}")
             print("⚠️ Falling back to manual workflow for result compilation")
-            return await self._execute_manual_sequential_workflow(params)
+            return await self._execute_manual_sequential_workflow(params, None, False)
     
     def _extract_sql_from_response(self, content: str) -> str:
         """
@@ -764,6 +828,89 @@ Each agent should complete their step and pass results to the next agent.
             data=response_data,
             metadata=metadata
         )
+    
+    async def _complete_workflow_with_logging(self, workflow_context, result: Dict[str, Any], 
+                                             question: str, workflow_time: float) -> Optional[Any]:
+        """
+        Complete the workflow session with conversation logging
+        """
+        try:
+            # Extract results from workflow
+            data = result.get("data", {})
+            
+            # Create FormattedResults if available
+            formatted_results = None
+            if "formatted_results" in data and data["formatted_results"]:
+                if isinstance(data["formatted_results"], dict):
+                    formatted_results = FormattedResults(**data["formatted_results"])
+                else:
+                    formatted_results = data["formatted_results"]
+            
+            # Create AgentResponse from summary data
+            agent_response = AgentResponse(
+                agent_type="orchestrator",
+                response="Workflow completed successfully",
+                executive_summary=data.get("summary", {}).get("executive_summary", "Query processed successfully"),
+                key_insights=data.get("summary", {}).get("key_insights", ["Data retrieved and analyzed"]),
+                recommendations=data.get("summary", {}).get("recommendations", ["Review results for insights"]),
+                confidence_level=data.get("summary", {}).get("confidence_level", "high")
+            )
+            
+            # Complete workflow session
+            conversation_log = await self.memory_service.complete_workflow_session(
+                workflow_context=workflow_context,
+                formatted_results=formatted_results,
+                agent_response=agent_response,
+                sql_query=data.get("sql_query"),
+                processing_time_ms=int(workflow_time * 1000)
+            )
+            
+            return conversation_log
+            
+        except Exception as e:
+            print(f"❌ Error completing workflow logging: {e}")
+            return None
+    
+    def set_memory_service(self, memory_service: OrchestratorMemoryService):
+        """
+        Set the memory service for conversation logging
+        """
+        self.memory_service = memory_service
+        print("✅ Memory service configured for conversation logging")
+    
+    async def get_conversation_history(self, user_id: str, session_id: str = None, limit: int = 10) -> List:
+        """
+        Get conversation history for a user/session
+        """
+        if not self.memory_service:
+            return []
+        
+        try:
+            # Use the cosmos service directly for conversation retrieval
+            cosmos_service = self.memory_service.cosmos_service
+            conversations = await cosmos_service.get_user_conversations_async(
+                user_id=user_id,
+                session_id=session_id,
+                limit=limit
+            )
+            return conversations
+        except Exception as e:
+            print(f"❌ Error retrieving conversation history: {e}")
+            return []
+    
+    async def get_user_analytics(self, user_id: str, days: int = 30):
+        """
+        Get user analytics from conversation history
+        """
+        if not self.memory_service:
+            return None
+        
+        try:
+            analytics = await self.memory_service.get_user_analytics_enhanced(user_id, days)
+            return analytics
+        except Exception as e:
+            print(f"❌ Error retrieving user analytics: {e}")
+            return None
     
     def _get_workflow_steps(self, execute: bool, include_summary: bool) -> List[str]:
         """
