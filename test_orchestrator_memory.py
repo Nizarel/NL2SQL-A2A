@@ -81,9 +81,10 @@ async def test_orchestrator_memory():
                     "execution_time": f"{i * 0.1:.2f}s"
                 },
                 agent_response=AgentResponse(
+                    agent_type="orchestrator_test",
                     response=f"Here are the results for: {query_text}",
-                    sql_query=f"SELECT * FROM table WHERE condition = '{query_text[:20]}...'",
-                    confidence_score=0.9
+                    success=True,
+                    processing_time_ms=i * 100
                 ),
                 execution_time_ms=i * 100,
                 success=True
