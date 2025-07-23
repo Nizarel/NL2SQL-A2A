@@ -414,6 +414,7 @@ class CosmosDbService:
     ) -> List[CacheItem]:
         """
         Search for similar vector embeddings using Cosmos DB Vector Search.
+        Falls back to manual similarity calculation if VectorDistance is not available.
         
         Args:
             query_embedding: Query vector to find similar embeddings
@@ -421,36 +422,118 @@ class CosmosDbService:
             similarity_threshold: Minimum similarity score (0.0-1.0)
             
         Returns:
-            List of similar cache items with embeddings
+            List of similar cache items with embeddings ordered by similarity
         """
         try:
-            # Cosmos DB Vector Search query
-            # Note: This requires the container to have a vector index on the /embedding path
+            # First, try the advanced vector search with VectorDistance function
             query = """
-            SELECT TOP @limit c.key, c["value"], c.embedding, c.metadata, c.created_at
+            SELECT TOP @limit c.key, c["value"], c.embedding, c.metadata, c.created_at,
+                   VectorDistance(c.embedding, @queryVector) AS similarity_score
             FROM c 
             WHERE c.embedding != null
-            ORDER BY c.key
+            ORDER BY VectorDistance(c.embedding, @queryVector)
             """
             
             parameters = [
-                {"name": "@limit", "value": limit}
+                {"name": "@limit", "value": limit},
+                {"name": "@queryVector", "value": query_embedding}
             ]
             
             similar_items = []
-            async for item in self._cache_container.query_items(
-                query=query,
-                parameters=parameters
-            ):
-                similar_items.append(CacheItem.model_validate(item))
+            try:
+                async for item in self._cache_container.query_items(
+                    query=query,
+                    parameters=parameters
+                ):
+                    # Check if VectorDistance actually returned a value
+                    if "similarity_score" in item and item["similarity_score"] is not None:
+                        # Add similarity score to metadata
+                        cache_item = CacheItem.model_validate(item)
+                        if not cache_item.metadata:
+                            cache_item.metadata = {}
+                        cache_item.metadata["similarity_score"] = item["similarity_score"]
+                        
+                        # Filter by similarity threshold (lower distance = higher similarity)
+                        similarity_score = item["similarity_score"]
+                        if similarity_score <= (1.0 - similarity_threshold):
+                            similar_items.append(cache_item)
+                    else:
+                        # VectorDistance didn't return a value, fall back to manual calculation
+                        raise ValueError("VectorDistance function not returning values")
+                
+                if similar_items:
+                    logger.info(f"Vector search found {len(similar_items)} similar embeddings with threshold {similarity_threshold}")
+                    return similar_items
+                else:
+                    logger.info("VectorDistance query worked but no items met similarity threshold")
+                    
+            except Exception as vector_error:
+                logger.warning(f"VectorDistance function not working properly: {str(vector_error)}")
+                # Fall through to manual calculation
+                
+            # Manual similarity calculation fallback
+            logger.info("Using manual similarity calculation for vector search")
+            return await self._manual_similarity_search(query_embedding, limit, similarity_threshold)
             
-            logger.debug(f"Found {len(similar_items)} embeddings (using basic query)")
+        except CosmosHttpResponseError as e:
+            logger.warning(f"Vector search failed, falling back to basic search: {str(e)}")
+            # Fallback to regular query without vector search
+            return await self._fallback_embedding_search(query_embedding, limit)
+    
+    async def _manual_similarity_search(
+        self, 
+        query_embedding: List[float], 
+        limit: int,
+        similarity_threshold: float
+    ) -> List[CacheItem]:
+        """
+        Manual similarity calculation using cosine similarity.
+        """
+        import math
+        
+        def cosine_similarity(vec1, vec2):
+            """Calculate cosine similarity between two vectors."""
+            # Ensure same length
+            min_len = min(len(vec1), len(vec2))
+            vec1 = vec1[:min_len]
+            vec2 = vec2[:min_len]
+            
+            dot_product = sum(a * b for a, b in zip(vec1, vec2))
+            magnitude1 = math.sqrt(sum(a * a for a in vec1))
+            magnitude2 = math.sqrt(sum(a * a for a in vec2))
+            
+            if magnitude1 == 0 or magnitude2 == 0:
+                return 0
+            
+            return dot_product / (magnitude1 * magnitude2)
+        
+        try:
+            # Get all embeddings
+            query = "SELECT c.key, c[\"value\"], c.embedding, c.metadata, c.created_at FROM c WHERE c.embedding != null"
+            
+            similarities = []
+            async for item in self._cache_container.query_items(query=query):
+                embedding = item['embedding']
+                similarity = cosine_similarity(query_embedding, embedding)
+                
+                if similarity >= similarity_threshold:
+                    cache_item = CacheItem.model_validate(item)
+                    # Add similarity score to metadata
+                    if not cache_item.metadata:
+                        cache_item.metadata = {}
+                    cache_item.metadata["similarity_score"] = similarity
+                    similarities.append((similarity, cache_item))
+            
+            # Sort by similarity (highest first) and limit results
+            similarities.sort(key=lambda x: x[0], reverse=True)
+            similar_items = [item for _, item in similarities[:limit]]
+            
+            logger.info(f"Manual similarity search found {len(similar_items)} similar embeddings")
             return similar_items
             
         except CosmosHttpResponseError as e:
-            logger.warning(f"Vector search failed (may need vector index): {str(e)}")
-            # Fallback to regular query without vector search
-            return await self._fallback_embedding_search(query_embedding, limit)
+            logger.error(f"Manual similarity search failed: {str(e)}")
+            return []
     
     async def _fallback_embedding_search(
         self, 
@@ -532,7 +615,9 @@ class CosmosDbService:
             "vectorIndexes": [
                 {
                     "path": "/embedding",
-                    "type": "diskANN"
+                    "type": "diskANN",
+                    "quantizationByteSize": 96,
+                    "indexingSearchListSize": 100
                 }
             ]
         }
