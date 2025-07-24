@@ -838,25 +838,86 @@ Each agent should complete their step and pass results to the next agent.
             # Extract results from workflow
             data = result.get("data", {})
             
+            print(f"🔍 DEBUG: Workflow completion data keys: {list(data.keys())}")
+            print(f"🔍 DEBUG: Result success: {result.get('success')}")
+            print(f"🔍 DEBUG: Has formatted_results: {'formatted_results' in data}")
+            print(f"🔍 DEBUG: Has summary: {'summary' in data}")
+            
             # Create FormattedResults if available
             formatted_results = None
             if "formatted_results" in data and data["formatted_results"]:
                 if isinstance(data["formatted_results"], dict):
+                    # Convert dict to FormattedResults object
+                    from Models.agent_response import FormattedResults
                     formatted_results = FormattedResults(**data["formatted_results"])
+                    print(f"✅ DEBUG: Created FormattedResults from dict with {formatted_results.total_rows} rows")
                 else:
                     formatted_results = data["formatted_results"]
+                    print(f"✅ DEBUG: Using existing FormattedResults object")
+            else:
+                print(f"⚠️ DEBUG: No formatted_results found in data")
             
-            # Create AgentResponse from summary data
-            agent_response = AgentResponse(
-                agent_type="orchestrator",
-                response="Workflow completed successfully",
-                executive_summary=data.get("summary", {}).get("executive_summary", "Query processed successfully"),
-                key_insights=data.get("summary", {}).get("key_insights", ["Data retrieved and analyzed"]),
-                recommendations=data.get("summary", {}).get("recommendations", ["Review results for insights"]),
-                confidence_level=data.get("summary", {}).get("confidence_level", "high")
-            )
+            # Extract summary data
+            summary_data = data.get("summary", {})
+            print(f"🔍 DEBUG: Summary data keys: {list(summary_data.keys()) if summary_data else 'None'}")
+            
+            # Create AgentResponse from summary data with proper string conversion
+            if summary_data:
+                # Convert structured insights and recommendations to strings
+                key_insights = summary_data.get("key_insights", ["Data retrieved and analyzed"])
+                recommendations = summary_data.get("recommendations", ["Review results for insights"])
+                
+                print(f"🔍 DEBUG: Raw key_insights type: {type(key_insights)}")
+                print(f"🔍 DEBUG: Raw recommendations type: {type(recommendations)}")
+                
+                # Convert structured data to strings for AgentResponse
+                insights_strings = []
+                if key_insights:
+                    for insight in key_insights:
+                        if isinstance(insight, dict):
+                            insight_text = insight.get("finding", str(insight))
+                            insights_strings.append(insight_text)
+                        else:
+                            insights_strings.append(str(insight))
+                
+                recommendations_strings = []
+                if recommendations:
+                    for rec in recommendations:
+                        if isinstance(rec, dict):
+                            rec_text = rec.get("action", rec.get("recommendation", str(rec)))
+                            recommendations_strings.append(rec_text)
+                        else:
+                            recommendations_strings.append(str(rec))
+                
+                print(f"🔍 DEBUG: Converted insights: {len(insights_strings)} items")
+                print(f"🔍 DEBUG: Converted recommendations: {len(recommendations_strings)} items")
+                
+                agent_response = AgentResponse(
+                    agent_type="orchestrator",
+                    response="Workflow completed successfully",
+                    success=result.get("success", False),
+                    executive_summary=summary_data.get("executive_summary", "Query processed successfully"),
+                    key_insights=insights_strings,
+                    recommendations=recommendations_strings,
+                    confidence_level=summary_data.get("confidence_level", "high"),
+                    processing_time_ms=int(workflow_time * 1000)
+                )
+                print(f"✅ DEBUG: Created AgentResponse with summary data")
+            else:
+                # Fallback response if no summary
+                agent_response = AgentResponse(
+                    agent_type="orchestrator",
+                    response="Query processed",
+                    success=result.get("success", False),
+                    key_insights=["Data processing completed"],
+                    recommendations=["Review results for insights"],
+                    confidence_level="medium",
+                    processing_time_ms=int(workflow_time * 1000)
+                )
+                print(f"⚠️ DEBUG: Created fallback AgentResponse (no summary)")
             
             # Complete workflow session
+            print(f"🔄 DEBUG: Calling complete_workflow_session...")
             conversation_log = await self.memory_service.complete_workflow_session(
                 workflow_context=workflow_context,
                 formatted_results=formatted_results,
@@ -865,10 +926,17 @@ Each agent should complete their step and pass results to the next agent.
                 processing_time_ms=int(workflow_time * 1000)
             )
             
+            if conversation_log:
+                print(f"✅ DEBUG: Workflow session completed successfully")
+            else:
+                print(f"❌ DEBUG: Workflow session completion returned None")
+            
             return conversation_log
             
         except Exception as e:
             print(f"❌ Error completing workflow logging: {e}")
+            import traceback
+            print(f"❌ Traceback: {traceback.format_exc()}")
             return None
     
     def set_memory_service(self, memory_service: OrchestratorMemoryService):

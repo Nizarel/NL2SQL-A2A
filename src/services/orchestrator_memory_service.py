@@ -609,15 +609,47 @@ class OrchestratorMemoryService:
             ConversationLog object if successful, None if failed
         """
         try:
-            # Update workflow context with provided data (storing in workflow stages)
+            print(f"🔄 DEBUG: Completing workflow session for {workflow_context.workflow_id}")
+            
+            # Update workflow context with provided data (storing in expected format)
             if sql_query:
-                workflow_context.sql_generation = {"sql_query": sql_query}
+                workflow_context.sql_generation = {"success": True, "data": {"sql_query": sql_query}}
+                print(f"✅ DEBUG: Stored SQL query in workflow context")
+                
             if formatted_results:
-                workflow_context.execution = {"formatted_results": formatted_results.model_dump() if hasattr(formatted_results, 'model_dump') else str(formatted_results)}
+                # Store in the format expected by _extract_formatted_results
+                if hasattr(formatted_results, 'model_dump'):
+                    formatted_data = formatted_results.model_dump()
+                else:
+                    formatted_data = formatted_results
+                    
+                workflow_context.execution = {
+                    "success": True,
+                    "data": {"formatted_results": formatted_data}
+                }
+                print(f"✅ DEBUG: Stored formatted_results in workflow context with {formatted_data.get('total_rows', 0)} rows")
+                
             if agent_response:
-                workflow_context.summarization = {"agent_response": agent_response.model_dump() if hasattr(agent_response, 'model_dump') else str(agent_response)}
+                # Store in the format expected by _create_business_agent_response  
+                if hasattr(agent_response, 'model_dump'):
+                    agent_data = agent_response.model_dump()
+                else:
+                    agent_data = agent_response
+                    
+                workflow_context.summarization = {
+                    "success": True,
+                    "data": {
+                        "executive_summary": agent_data.get("executive_summary", ""),
+                        "key_insights": agent_data.get("key_insights", []),
+                        "recommendations": agent_data.get("recommendations", []),
+                        "confidence_level": agent_data.get("confidence_level", "medium")
+                    }
+                }
+                print(f"✅ DEBUG: Stored agent response in workflow context")
+                
             if processing_time_ms:
                 workflow_context.total_processing_time_ms = processing_time_ms
+                print(f"✅ DEBUG: Stored processing time: {processing_time_ms}ms")
             
             # Create cache entry for the query-result pair
             await self._create_cache_entry_from_workflow(workflow_context, formatted_results, agent_response, sql_query, processing_time_ms)
