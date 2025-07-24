@@ -1077,12 +1077,7 @@ class OrchestratorMemoryService:
                 role="nl2sql_conversation",
                 content=structured_data,  # Store as structured data, not JSON string
                 timestamp=conversation_log.timestamp,
-                metadata={
-                    "conversation_id": conversation_log.id,
-                    "workflow_id": conversation_log.metadata.workflow_id,
-                    "conversation_turn": conversation_log.metadata.conversation_turn,
-                    "conversation_type": conversation_log.metadata.conversation_type
-                }
+                metadata={}
             )
             
             await self.cosmos_service.insert_message_async(conversation_log.user_id, message)
