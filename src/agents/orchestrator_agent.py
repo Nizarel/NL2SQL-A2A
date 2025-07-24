@@ -1,12 +1,10 @@
 """
-Orchestrator Agent - Coordinates multi-agent workflow using Semantic Kernel 1.34.0
+Orchestrator Agent - Coordinates multi-agent workflow with enhanced service integration
 Sequential Pattern: SchemaAnalyst → SQLGenerator → Executor → Summarizer
-Enhanced with conversation logging and session tracking
+Optimized with enhanced services for better performance and maintainability
 """
 
-import re
 import time
-import asyncio
 from typing import Dict, Any, List, Optional
 from semantic_kernel import Kernel
 from semantic_kernel.agents import ChatCompletionAgent
@@ -24,16 +22,22 @@ from agents.schema_analyst_agent import SchemaAnalystAgent
 from services.orchestrator_memory_service import OrchestratorMemoryService
 from Models.agent_response import FormattedResults, AgentResponse
 
+# Enhanced Services Integration
+from services.error_handling_service import ErrorHandlingService
+from services.sql_utility_service import SQLUtilityService
+from services.monitoring_service import monitoring_service
+from services.configuration_service import config_service
+
 
 class OrchestratorAgent(BaseAgent):
     """
-    Agent responsible for orchestrating the sequential multi-agent workflow:
+    Agent responsible for orchestrating the sequential multi-agent workflow with enhanced services:
     1. SchemaAnalystAgent: Analyzes schema and provides optimized context
     2. SQLGeneratorAgent: Converts natural language to SQL using optimized context
     3. ExecutorAgent: Executes the generated SQL query
     4. SummarizingAgent: Analyzes results and generates insights
     
-    Enhanced with automatic conversation logging and session tracking.
+    Enhanced with service integration for better performance and error handling.
     """
     
     def __init__(self, kernel: Kernel, schema_analyst: SchemaAnalystAgent, 
@@ -46,9 +50,42 @@ class OrchestratorAgent(BaseAgent):
         self.sql_generator = sql_generator
         self.executor = executor
         self.summarizer = summarizer
-        
-        # Memory service for conversation logging
         self.memory_service = memory_service
+        
+        # Get orchestrator configuration from ConfigurationService with fallback
+        try:
+            self.orchestrator_config = config_service.get_config("orchestrator") or {}
+        except ValueError:
+            # Fallback to default configuration if orchestrator section doesn't exist
+            self.orchestrator_config = {
+                "default_execute": True,
+                "default_limit": 100,
+                "default_include_summary": True,
+                "default_logging": True,
+                "workflow_timeout": 300,
+                "enable_sk_orchestration": True
+            }
+            print("⚠️ Using default orchestrator configuration (orchestrator section not found)")
+        
+        # Initialize performance monitoring
+        self._initialize_monitoring()
+        
+        # Initialize Semantic Kernel AgentGroupChat for orchestration
+        self.agent_group_chat: Optional[AgentGroupChat] = None
+        self._sk_orchestration_active = False
+        self._initialize_sk_orchestration()
+        
+        print("🚀 Orchestrator Agent initialized with enhanced service integration")
+    
+    def _initialize_monitoring(self):
+        """Initialize monitoring metrics for orchestrator performance"""
+        try:
+            monitoring_service.record_metric("orchestrator_workflow_time", 0.0)
+            monitoring_service.record_metric("orchestrator_success_rate", 100.0)
+            monitoring_service.record_metric("orchestrator_error_rate", 0.0)
+            print("📊 Orchestrator monitoring initialized")
+        except Exception as e:
+            print(f"⚠️ Monitoring initialization warning: {e}")
         
         # Initialize Semantic Kernel AgentGroupChat for orchestration
         self.agent_group_chat: Optional[AgentGroupChat] = None
@@ -144,104 +181,105 @@ WHAT YOU MUST NOT DO:
             
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute the sequential multi-agent workflow with conversation logging
-        
-        Args:
-            input_data: Dictionary containing:
-                - question: Natural language question
-                - user_id: User identifier (for conversation logging)
-                - session_id: Session identifier (for conversation logging)
-                - context: Optional additional context
-                - execute: Whether to execute generated SQL
-                - limit: Row limit for results
-                - include_summary: Whether to generate summary
-                - enable_conversation_logging: Whether to log conversations (default: True)
-                
-        Returns:
-            Dictionary containing complete workflow results
+        Enhanced sequential multi-agent workflow with service integration
         """
         workflow_start_time = time.time()
-        workflow_context = None
+        correlation_id = input_data.get("correlation_id", f"workflow_{int(time.time())}")
+        
+        # Record workflow start
+        monitoring_service.record_metric("orchestrator_workflow_time", 0)
         
         try:
+            # Enhanced input validation with ConfigurationService
             question = input_data.get("question", "")
             user_id = input_data.get("user_id", "default_user")
             session_id = input_data.get("session_id", "default_session")
             context = input_data.get("context", "")
-            execute = input_data.get("execute", True)
-            limit = input_data.get("limit", 100)
-            include_summary = input_data.get("include_summary", True)
-            enable_conversation_logging = input_data.get("enable_conversation_logging", True)
+            execute = input_data.get("execute", self.orchestrator_config.get("default_execute", True))
+            limit = input_data.get("limit", self.orchestrator_config.get("default_limit", 100))
+            include_summary = input_data.get("include_summary", self.orchestrator_config.get("default_include_summary", True))
+            enable_conversation_logging = input_data.get("enable_conversation_logging", self.orchestrator_config.get("default_logging", True))
             
+            # Enhanced validation with ErrorHandlingService
             if not question:
-                return self._create_result(
-                    success=False,
-                    error="No question provided for processing"
+                return ErrorHandlingService.create_enhanced_error_response(
+                    error=ValueError("No question provided for processing"),
+                    context={"operation": "orchestrator_input_validation", "correlation_id": correlation_id}
                 )
             
-            print(f"🎯 Orchestrating workflow for: {question}")
+            print(f"🎯 Enhanced orchestrating workflow for: {question}")
             
-            # Start workflow session for conversation logging
+            # Start workflow session with enhanced error handling
+            workflow_context = None
             if self.memory_service and enable_conversation_logging:
                 try:
                     workflow_context = await self.memory_service.start_workflow_session(
-                        user_id=user_id,
-                        user_input=question,
-                        session_id=session_id
+                        user_id=user_id, user_input=question, session_id=session_id
                     )
                     print(f"📝 Started workflow session: {workflow_context.workflow_id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to start workflow session: {e}")
+                    error_response = ErrorHandlingService.handle_agent_processing_error(
+                        error=e, agent_name="OrchestratorAgent", 
+                        input_data={"operation": "start_workflow_session"}, step="workflow_initialization"
+                    )
+                    print(f"⚠️ Workflow session creation failed: {error_response['error']}")
                     workflow_context = None
             
-            # Determine orchestration strategy based on concurrency
-            # SK AgentGroupChat doesn't handle concurrency well, so use manual for concurrent requests
-            use_sk_orchestration = (
-                self.agent_group_chat is not None and 
-                not self._sk_orchestration_active
+            # Use enhanced manual sequential workflow
+            result = await self._execute_enhanced_sequential_workflow(
+                input_data, workflow_context, enable_conversation_logging, correlation_id
             )
             
-            if use_sk_orchestration:
-                # Try SK orchestration for single requests
-                self._sk_orchestration_active = True
-                try:
-                    print("🔄 Starting Semantic Kernel sequential orchestration...")
-                    result = await self._execute_sk_sequential_workflow(input_data)
-                finally:
-                    self._sk_orchestration_active = False
-            else:
-                # Use manual orchestration for concurrent requests or if SK fails
-                if self._sk_orchestration_active:
-                    print("⚠️ SK orchestration busy, using manual sequential orchestration")
-                else:
-                    print("⚠️ Using manual sequential orchestration")
-                result = await self._execute_manual_sequential_workflow(input_data, workflow_context, enable_conversation_logging)
-            
-            # Complete workflow session with conversation logging
+            # Complete workflow session with enhanced logging
             if self.memory_service and enable_conversation_logging and workflow_context and result.get("success"):
                 try:
                     conversation_log = await self._complete_workflow_with_logging(
-                        workflow_context=workflow_context,
-                        result=result,
-                        question=question,
+                        workflow_context=workflow_context, result=result, question=question,
                         workflow_time=time.time() - workflow_start_time
                     )
-                    
                     if conversation_log:
                         result["conversation_log_id"] = conversation_log.id
-                        print(f"📝 Logged conversation: {conversation_log.id}")
-                    
+                        print(f"📝 Enhanced conversation logged: {conversation_log.id}")
                 except Exception as e:
-                    print(f"⚠️ Failed to complete conversation logging: {e}")
+                    error_response = ErrorHandlingService.handle_agent_processing_error(
+                        error=e, agent_name="OrchestratorAgent",
+                        input_data={"operation": "complete_workflow_logging"}, step="workflow_completion"
+                    )
+                    print(f"⚠️ Enhanced conversation logging failed: {error_response['error']}")
             
-            # Add workflow timing metadata
+            # Enhanced metadata and monitoring
+            workflow_time = time.time() - workflow_start_time
+            monitoring_service.record_metric("orchestrator_workflow_time", workflow_time * 1000)
+            monitoring_service.record_metric("orchestrator_success_rate", 100.0 if result.get("success") else 0.0)
+            
+            # Enhanced metadata
             if "metadata" not in result:
                 result["metadata"] = {}
-            result["metadata"]["total_workflow_time"] = round(time.time() - workflow_start_time, 3)
-            result["metadata"]["orchestration_pattern"] = "sequential"
-            result["metadata"]["workflow_steps"] = self._get_workflow_steps(execute, include_summary)
-            result["metadata"]["conversation_logged"] = bool(
-                self.memory_service and enable_conversation_logging and workflow_context and result.get("success")
+            result["metadata"].update({
+                "total_workflow_time": round(workflow_time, 3),
+                "orchestration_pattern": "enhanced_sequential",
+                "workflow_steps": self._get_workflow_steps(execute, include_summary),
+                "conversation_logged": bool(workflow_context and result.get("success")),
+                "services_integrated": {"error_handling": True, "sql_utility": True, "monitoring": True, "configuration": True},
+                "correlation_id": correlation_id
+            })
+            
+            return result
+            
+        except Exception as e:
+            # Enhanced error handling with full context
+            workflow_time = time.time() - workflow_start_time
+            monitoring_service.record_metric("orchestrator_workflow_time", workflow_time * 1000)
+            monitoring_service.record_metric("orchestrator_success_rate", 0.0)
+            
+            return ErrorHandlingService.create_enhanced_error_response(
+                error=e,
+                context={
+                    "operation": "enhanced_orchestrator_workflow",
+                    "correlation_id": correlation_id,
+                    "workflow_time": workflow_time,
+                    "question": question[:100] if 'question' in locals() else "unknown"
+                }
             )
             
             return result
@@ -251,6 +289,43 @@ WHAT YOU MUST NOT DO:
                 success=False,
                 error=f"Orchestration workflow failed: {str(e)}",
                 metadata={"total_workflow_time": round(time.time() - workflow_start_time, 3)}
+            )
+    
+    async def _execute_enhanced_sequential_workflow(self, input_data: Dict[str, Any], workflow_context, enable_conversation_logging: bool, correlation_id: str) -> Dict[str, Any]:
+        """
+        Enhanced sequential workflow with service integration
+        """
+        try:
+            # Extract parameters
+            question = input_data.get("question", "")
+            context = input_data.get("context", "")
+            execute = input_data.get("execute", self.orchestrator_config.get("default_execute", True))
+            limit = input_data.get("limit", self.orchestrator_config.get("default_limit", 100))
+            include_summary = input_data.get("include_summary", self.orchestrator_config.get("default_include_summary", True))
+            
+            # Use enhanced manual sequential workflow with error handling
+            result = await self._execute_manual_sequential_workflow(
+                params={
+                    "question": question,
+                    "context": context,
+                    "execute": execute,
+                    "limit": limit,
+                    "include_summary": include_summary
+                },
+                workflow_context=workflow_context,
+                enable_conversation_logging=enable_conversation_logging
+            )
+            
+            return result
+            
+        except Exception as e:
+            return ErrorHandlingService.create_enhanced_error_response(
+                error=e,
+                context={
+                    "operation": "enhanced_sequential_workflow",
+                    "correlation_id": correlation_id,
+                    "question": question[:100] if 'question' in locals() else "unknown"
+                }
             )
     
     async def _execute_sk_sequential_workflow(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -499,8 +574,8 @@ Each agent should complete their step and pass results to the next agent.
                     content = response.content
                     print(f"🔍 Examining SQLGenerator response: {content[:200]}...")
                     
-                    # Enhanced SQL extraction logic to handle various response formats
-                    sql_query = self._extract_sql_from_response(content)
+                    # Enhanced SQL extraction logic using SQLUtilityService
+                    sql_query = SQLUtilityService.extract_sql_from_response(content)
                     if sql_query:
                         break
             
@@ -510,7 +585,7 @@ Each agent should complete their step and pass results to the next agent.
                 for response in agent_responses:
                     if hasattr(response, 'content'):
                         content = response.content
-                        sql_query = self._extract_sql_from_response(content)
+                        sql_query = SQLUtilityService.extract_sql_from_response(content)
                         if sql_query:
                             print(f"🔍 Found SQL in {getattr(response, 'name', 'unknown')} response")
                             break
@@ -521,7 +596,6 @@ Each agent should complete their step and pass results to the next agent.
                 
                 # Clean the extracted SQL to ensure SQL Server compatibility
                 # Clean and validate SQL using the SQLUtilityService
-                from services.sql_utility_service import SQLUtilityService
                 cleaned_sql = SQLUtilityService.clean_sql_query(sql_query)
                 print(f"🧹 Cleaned SQL: {cleaned_sql}")
                 
@@ -636,118 +710,6 @@ Each agent should complete their step and pass results to the next agent.
             print(f"❌ SK result parsing failed: {str(e)}")
             print("⚠️ Falling back to manual workflow for result compilation")
             return await self._execute_manual_sequential_workflow(params, None, False)
-    
-    def _extract_sql_from_response(self, content: str) -> str:
-        """
-        Enhanced SQL extraction from agent response content
-        Handles various formats including markdown, explanatory text, and direct SQL
-        """
-        if not content or 'SELECT' not in content.upper():
-            return None
-        
-        # Strategy 1: Extract from ```sql markdown blocks
-        sql_pattern = r'```sql\s*(.*?)\s*```'
-        matches = re.findall(sql_pattern, content, re.DOTALL | re.IGNORECASE)
-        if matches:
-            sql_candidate = matches[0].strip()
-            if self._is_valid_sql_candidate(sql_candidate):
-                return sql_candidate
-        
-        # Strategy 2: Extract from plain ``` code blocks containing SELECT
-        code_pattern = r'```\s*(.*?)\s*```'
-        matches = re.findall(code_pattern, content, re.DOTALL)
-        for match in matches:
-            match = match.strip()
-            if 'SELECT' in match.upper() and self._is_valid_sql_candidate(match):
-                return match
-        
-        # Strategy 3: Extract multiline SELECT statements from free text
-        lines = content.split('\n')
-        sql_lines = []
-        in_sql_block = False
-        
-        for i, line in enumerate(lines):
-            line = line.strip()
-            
-            # Start collecting when we see SELECT or WITH (but don't restart if already collecting)
-            if not in_sql_block and (line.upper().startswith('SELECT') or (line.upper().startswith('WITH') and i < len(lines) - 1 and 'SELECT' in lines[i+1].upper())):
-                in_sql_block = True
-                sql_lines = [line]
-                continue
-            
-            if in_sql_block:
-                # Continue collecting SQL lines
-                if line:
-                    sql_lines.append(line)
-                
-                # Stop conditions
-                if (line.endswith(';') or 
-                    line.upper().startswith('LIMIT') or 
-                    line.upper().startswith('ORDER BY') and ';' in line or
-                    i == len(lines) - 1):  # End of content
-                    
-                    sql_candidate = '\n'.join(sql_lines)
-                    if self._is_valid_sql_candidate(sql_candidate):
-                        return sql_candidate
-                    else:
-                        # Reset and continue looking
-                        in_sql_block = False
-                        sql_lines = []
-                
-                # Reset if we hit explanatory text that indicates end of SQL
-                elif (line.upper().startswith('THIS QUERY') or 
-                      line.upper().startswith('EXPLANATION') or
-                      line.upper().startswith('NOTE:') or
-                      line.upper().startswith('THE ABOVE') or
-                      line.upper().startswith('STEP ') or
-                      line.upper().startswith('**STEP')):
-                    
-                    sql_candidate = '\n'.join(sql_lines[:-1])  # Exclude the explanatory line
-                    if self._is_valid_sql_candidate(sql_candidate):
-                        return sql_candidate
-                    else:
-                        in_sql_block = False
-                        sql_lines = []
-        
-        # Strategy 4: Look for single-line SELECT statements
-        for line in lines:
-            line = line.strip()
-            if (line.upper().startswith('SELECT') and 
-                ('FROM' in line.upper() or 'TOP' in line.upper()) and
-                len(line) > 30):  # Likely a complete SQL statement
-                return line
-        
-        return None
-    
-    def _is_valid_sql_candidate(self, sql_text: str) -> bool:
-        """
-        Check if extracted text is likely a valid SQL query
-        """
-        if not sql_text or len(sql_text.strip()) < 20:
-            return False
-        
-        sql_upper = sql_text.upper()
-        
-        # Must contain SELECT
-        if 'SELECT' not in sql_upper:
-            return False
-        
-        # Should contain FROM (basic SQL structure)
-        if 'FROM' not in sql_upper:
-            return False
-        
-        # Should not contain too much explanatory text
-        explanatory_keywords = ['STEP ', 'NOTE:', 'EXPLANATION', 'THIS QUERY', 'THE ABOVE', '**STEP']
-        explanatory_ratio = sum(1 for keyword in explanatory_keywords if keyword in sql_upper)
-        if explanatory_ratio > 2:  # Too much explanation mixed in
-            return False
-        
-        # Check for basic SQL keywords
-        sql_keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP', 'ORDER', 'JOIN', 'AS']
-        keyword_count = sum(1 for keyword in sql_keywords if keyword in sql_upper)
-        
-        # Should have at least 2 SQL keywords
-        return keyword_count >= 2
     
     def _compile_workflow_results(self, workflow_results: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
