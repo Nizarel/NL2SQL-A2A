@@ -4,6 +4,7 @@ Summarizing Agent - Analyzes raw data and generates business insights
 
 from typing import Dict, Any, List
 import os
+import sys
 from semantic_kernel import Kernel
 from semantic_kernel.functions import KernelFunctionFromPrompt
 from semantic_kernel.prompt_template import PromptTemplateConfig
@@ -11,7 +12,15 @@ from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion
 from semantic_kernel.contents import ChatHistory
 from semantic_kernel.functions import KernelArguments
 
-from agents.base_agent import BaseAgent
+# Add parent directory to path for imports when running directly
+if __name__ == "__main__" or "pytest" in sys.modules:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+try:
+    from agents.base_agent import BaseAgent
+except ImportError:
+    # Fallback for direct execution
+    from base_agent import BaseAgent
 
 
 class SummarizingAgent(BaseAgent):

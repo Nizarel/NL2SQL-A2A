@@ -16,11 +16,11 @@ from semantic_kernel.contents import ChatMessageContent, AuthorRole
 from semantic_kernel.connectors.ai.open_ai import AzureChatPromptExecutionSettings
 from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
 
-from .base_agent import BaseAgent
-from .sql_generator_agent import SQLGeneratorAgent
-from .executor_agent import ExecutorAgent
-from .summarizing_agent import SummarizingAgent
-from .schema_analyst_agent import SchemaAnalystAgent
+from agents.base_agent import BaseAgent
+from agents.sql_generator_agent import SQLGeneratorAgent
+from agents.executor_agent import ExecutorAgent
+from agents.summarizing_agent import SummarizingAgent
+from agents.schema_analyst_agent import SchemaAnalystAgent
 from services.orchestrator_memory_service import OrchestratorMemoryService
 from Models.agent_response import FormattedResults, AgentResponse
 
@@ -520,7 +520,9 @@ Each agent should complete their step and pass results to the next agent.
                 print(f"🔍 Full extracted SQL: {sql_query}")
                 
                 # Clean the extracted SQL to ensure SQL Server compatibility
-                cleaned_sql = self.sql_generator._clean_sql_query(sql_query)
+                # Clean and validate SQL using the SQLUtilityService
+                from services.sql_utility_service import SQLUtilityService
+                cleaned_sql = SQLUtilityService.clean_sql_query(sql_query)
                 print(f"🧹 Cleaned SQL: {cleaned_sql}")
                 
                 # Now execute the cleaned SQL using our specialized agents for real execution
@@ -848,7 +850,6 @@ Each agent should complete their step and pass results to the next agent.
             if "formatted_results" in data and data["formatted_results"]:
                 if isinstance(data["formatted_results"], dict):
                     # Convert dict to FormattedResults object
-                    from Models.agent_response import FormattedResults
                     formatted_results = FormattedResults(**data["formatted_results"])
                     print(f"✅ DEBUG: Created FormattedResults from dict with {formatted_results.total_rows} rows")
                 else:

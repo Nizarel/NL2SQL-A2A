@@ -8,11 +8,11 @@ import os
 import hashlib
 from typing import Dict, Any, List
 from semantic_kernel import Kernel
-from semantic_kernel.prompt_template import PromptTemplateConfig
-from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
-from semantic_kernel.functions import KernelFunctionFromPrompt
 
 from agents.base_agent import BaseAgent
+from services.sql_utility_service import SQLUtilityService
+from services.error_handling_service import ErrorHandlingService
+from services.template_service import TemplateService
 
 
 class SQLGeneratorAgent(BaseAgent):
@@ -37,85 +37,16 @@ class SQLGeneratorAgent(BaseAgent):
     
     def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SQLGeneratorAgent")
-        self.template_functions = {}  # Store multiple template functions
-        self._template_cache = {}  # Cache for loaded templates
-        self._setup_templates()
+        self.template_service = TemplateService()
+        self.template_service.initialize_templates()
         
     def _setup_templates(self):
         """
-        Setup multiple Jinja2 templates for different complexity levels
+        Templates are now managed by TemplateService
+        This method is kept for compatibility but delegates to the service
         """
-        # Get the templates directory
-        templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
-        
-        # Template files for different complexity levels
-        template_files = {
-            'basic': 'sql_generation.jinja2',
-            'intermediate': 'intermediate_sql_generation.jinja2', 
-            'enhanced': 'enhanced_sql_generation.jinja2',
-            'advanced': 'advanced_sql_generation.jinja2'
-            # Removed multi_step template to ensure consistency
-        }
-        
-        try:
-            # Load intent analysis template
-            intent_template_path = os.path.join(templates_dir, 'intent_analysis.jinja2')
-            with open(intent_template_path, 'r', encoding='utf-8') as f:
-                intent_template_content = f.read()
-                
-            # Load all SQL generation templates
-            sql_templates = {}
-            for level, filename in template_files.items():
-                template_path = os.path.join(templates_dir, filename)
-                try:
-                    with open(template_path, 'r', encoding='utf-8') as f:
-                        sql_templates[level] = f.read()
-                except FileNotFoundError:
-                    print(f"⚠️ Template {filename} not found, using basic template as fallback")
-                    if 'basic' in sql_templates:
-                        sql_templates[level] = sql_templates['basic']
-                
-        except FileNotFoundError as e:
-            raise FileNotFoundError(f"Core template file not found: {e}. Please ensure template files exist in {templates_dir}")
-        except Exception as e:
-            raise Exception(f"Error loading template files: {e}")
-        
-        # Create intent analysis function
-        intent_config = PromptTemplateConfig(
-            template=intent_template_content,
-            name="intent_analysis",
-            template_format="jinja2",
-            execution_settings={
-                "default": PromptExecutionSettings(
-                    max_tokens=500,
-                    temperature=0.1
-                )
-            }
-        )
-        
-        self.intent_analysis_function = KernelFunctionFromPrompt(
-            function_name="analyze_intent",
-            prompt_template_config=intent_config
-        )
-        
-        # Create SQL generation functions for each complexity level
-        for level, template_content in sql_templates.items():
-            sql_config = PromptTemplateConfig(
-                template=template_content,
-                name=f"sql_generation_{level}",
-                template_format="jinja2",
-                execution_settings={
-                    "default": PromptExecutionSettings(
-                        max_tokens=1200 if level in ['advanced', 'enhanced'] else 800,
-                        temperature=0.1
-                    )
-                }
-            )
-            
-            self.template_functions[level] = KernelFunctionFromPrompt(
-                function_name=f"generate_sql_{level}",
-                prompt_template_config=sql_config
-            )
+        # Template setup is handled by TemplateService in __init__
+        pass
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -181,12 +112,12 @@ class SQLGeneratorAgent(BaseAgent):
             )
             
             # STEP 6: Clean and validate SQL
-            cleaned_sql = self._clean_sql_query(sql_query)
+            cleaned_sql = SQLUtilityService.clean_sql_query(sql_query)
             
             # STEP 7: Prepare enhanced metadata
             metadata = {
-                "schema_tables_used": self._extract_tables_from_sql(cleaned_sql),
-                "query_type": self._determine_query_type(cleaned_sql),
+                "schema_tables_used": SQLUtilityService.extract_tables_from_sql(cleaned_sql),
+                "query_type": SQLUtilityService.validate_sql_syntax(cleaned_sql).get("query_type"),
                 "schema_source": schema_source,
                 "schema_context_size": len(schema_context) if schema_context else 0,
                 "template_used": template_choice,
@@ -217,9 +148,11 @@ class SQLGeneratorAgent(BaseAgent):
             )
             
         except Exception as e:
-            return self._create_result(
-                success=False,
-                error=f"Enhanced SQL generation failed: {str(e)}"
+            return ErrorHandlingService.handle_agent_processing_error(
+                error=e,
+                agent_name="SQLGeneratorAgent",
+                input_data=input_data,
+                step="enhanced_sql_generation"
             )
     
     def _analyze_query_complexity(self, question: str) -> Dict[str, Any]:
@@ -447,12 +380,12 @@ class SQLGeneratorAgent(BaseAgent):
             # Force single-dimensional "for each" questions to use advanced template (not multi_step)
             if is_single_dimensional_each and score >= 0.75:
                 print(f"🎯 Single-dimensional 'for each' pattern detected - using advanced template (score: {score})")
-                return "advanced" if "advanced" in self.template_functions else "enhanced"
+                return "advanced"
             
             # Standard template selection for other patterns
             for threshold, template in self.TEMPLATE_THRESHOLDS.items():
                 if score >= float(threshold):
-                    return template if template in self.template_functions else "basic"
+                    return template
             return "basic"
             
         except (ValueError, TypeError) as e:
@@ -698,10 +631,10 @@ class SQLGeneratorAgent(BaseAgent):
             arguments["result_size_warning"] = complexity_analysis.get("complexity_score", 0) > 0.7 if complexity_analysis else False
             
             # Select the appropriate template function
-            template_function = self.template_functions.get(template_choice)
+            template_function = self.template_service.get_template_function(template_choice)
             if not template_function:
                 print(f"⚠️ Template {template_choice} not found, falling back to basic")
-                template_function = self.template_functions.get("basic", self.template_functions.get("enhanced"))
+                template_function = self.template_service.get_template_function("basic")
             
             if not template_function:
                 raise Exception("No SQL generation template available")
@@ -739,8 +672,9 @@ class SQLGeneratorAgent(BaseAgent):
                 arguments["key_metrics"] = str(schema_analysis.get("key_metrics", []))
             
             # Invoke the intent analysis function
+            intent_function = self.template_service.get_intent_analysis_function()
             result = await self.kernel.invoke(
-                self.intent_analysis_function,
+                intent_function,
                 arguments
             )
             
@@ -751,204 +685,18 @@ class SQLGeneratorAgent(BaseAgent):
         except Exception as e:
             return {"analysis": f"Intent analysis failed: {str(e)}"}
     
-    def _clean_sql_query(self, sql_query: str) -> str:
-        """
-        Clean and validate the generated SQL query using modular cleaning functions
-        """
-        # Remove markdown formatting first
-        sql_query = self._clean_markdown_formatting(sql_query)
-        
-        # Apply SQL Server specific syntax conversions
-        sql_query = self._clean_sql_syntax(sql_query)
-        sql_query = self._clean_date_functions(sql_query)
-        sql_query = self._clean_limit_clauses(sql_query)
-        sql_query = self._validate_table_prefixes(sql_query)
-        
-        # Final cleanup and validation
-        sql_query = self._final_cleanup(sql_query)
-        
-        return sql_query
-    
-    def _clean_markdown_formatting(self, sql_query: str) -> str:
-        """Remove markdown SQL code block formatting"""
-        sql_query = re.sub(r'^```sql\s*', '', sql_query, flags=re.MULTILINE)
-        sql_query = re.sub(r'^```\s*', '', sql_query, flags=re.MULTILINE)
-        sql_query = sql_query.strip()
-        
-        # Convert multi-line SQL to single-line format for SQL Server compatibility
-        sql_query = re.sub(r'\s+', ' ', sql_query)
-        return sql_query.strip()
-    
-    def _clean_sql_syntax(self, sql_query: str) -> str:
-        """Convert PostgreSQL/MySQL syntax to SQL Server syntax"""
-        # Convert CONCAT function to + operator
-        sql_query = re.sub(r'\bCONCAT\s*\(([^)]+)\)', 
-                          lambda m: m.group(1).replace(',', ' +'), 
-                          sql_query, flags=re.IGNORECASE)
-        
-        # Fix column aliases spacing around AS keyword
-        sql_query = re.sub(r'\s+AS\s+', ' AS ', sql_query, flags=re.IGNORECASE)
-        
-        return sql_query
-    
-    def _clean_date_functions(self, sql_query: str) -> str:
-        """Convert date functions to SQL Server format"""
-        # Convert PostgreSQL/MySQL INTERVAL syntax to SQL Server DATEADD
-        interval_patterns = [
-            (r"INTERVAL\s+'(\d+)\s+months?'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+'(\d+)\s+MONTH'", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+'(\d+)\s+days?'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+'(\d+)\s+DAY'", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+'(\d+)\s+years?'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+'(\d+)\s+YEAR'", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+(\d+)\s+MONTH", lambda m: f"DATEADD(MONTH, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+(\d+)\s+DAY", lambda m: f"DATEADD(DAY, -{m.group(1)}, GETDATE())"),
-            (r"INTERVAL\s+(\d+)\s+YEAR", lambda m: f"DATEADD(YEAR, -{m.group(1)}, GETDATE())"),
-        ]
-        
-        for pattern, replacement in interval_patterns:
-            sql_query = re.sub(pattern, replacement, sql_query, flags=re.IGNORECASE)
-        
-        # Handle complex INTERVAL expressions with arithmetic
-        sql_query = re.sub(
-            r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+months?'",
-            lambda m: f"DATEADD(MONTH, -{m.group(2)}, {m.group(1)})",
-            sql_query, flags=re.IGNORECASE
-        )
-        
-        sql_query = re.sub(
-            r"([A-Za-z_()]+)\s*-\s*INTERVAL\s+'(\d+)\s+days?'",
-            lambda m: f"DATEADD(DAY, -{m.group(2)}, {m.group(1)})",
-            sql_query, flags=re.IGNORECASE
-        )
-        
-        # Convert date extraction functions
-        sql_query = re.sub(r'\bEXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
-        sql_query = re.sub(r'\bEXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
-        sql_query = re.sub(r'\bEXTRACT\s*\(\s*DAY\s+FROM\s+([^)]+)\)', r'DAY(\1)', sql_query, flags=re.IGNORECASE)
-        
-        # Convert DATE_TRUNC to DATEPART for SQL Server
-        sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'year\'\s*,\s*([^)]+)\)', r'YEAR(\1)', sql_query, flags=re.IGNORECASE)
-        sql_query = re.sub(r'\bDATE_TRUNC\s*\(\s*\'month\'\s*,\s*([^)]+)\)', r'MONTH(\1)', sql_query, flags=re.IGNORECASE)
-        
-        # Convert current date/time functions
-        sql_query = re.sub(r'\bNOW\s*\(\s*\)', 'GETDATE()', sql_query, flags=re.IGNORECASE)
-        sql_query = re.sub(r'\bCURRENT_DATE\b', 'CAST(GETDATE() AS DATE)', sql_query, flags=re.IGNORECASE)
-        
-        # Fix invalid date arithmetic patterns
-        sql_query = re.sub(
-            r'\(\s*CAST\s*\(\s*GETDATE\s*\(\s*\)\s*AS\s+DATE\s*\)\s*-\s*(DATEADD\([^)]+\))\s*\)',
-            r'\1', sql_query, flags=re.IGNORECASE
-        )
-        
-        return sql_query
-    
-    def _clean_limit_clauses(self, sql_query: str) -> str:
-        """Convert LIMIT and OFFSET...FETCH NEXT to SQL Server TOP clause"""
-        # Convert OFFSET ... FETCH NEXT to TOP
-        offset_fetch_pattern = r'\bOFFSET\s+(\d+)\s+ROWS?\s+FETCH\s+NEXT\s+(\d+)\s+ROWS?\s+ONLY\b'
-        offset_match = re.search(offset_fetch_pattern, sql_query, re.IGNORECASE)
-        
-        if offset_match:
-            offset_value = int(offset_match.group(1))
-            fetch_value = int(offset_match.group(2))
-            
-            # Remove the OFFSET ... FETCH NEXT clause
-            sql_query = re.sub(offset_fetch_pattern, '', sql_query, flags=re.IGNORECASE).strip()
-            
-            if offset_value == 0:
-                # Add TOP after SELECT
-                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
-            else:
-                # For non-zero offset, use TOP with warning
-                print(f"⚠️ WARNING: OFFSET {offset_value} converted to TOP {fetch_value} (offset ignored for compatibility)")
-                sql_query = re.sub(r'\bSELECT\b', f'SELECT TOP {fetch_value}', sql_query, count=1, flags=re.IGNORECASE)
-        
-        # Convert LIMIT to TOP
-        limit_pattern_end = r'\bLIMIT\s+(\d+)\s*;?\s*$'
-        limit_pattern_mid = r'\bLIMIT\s+(\d+)\b'
-        
-        limit_match = re.search(limit_pattern_end, sql_query, re.IGNORECASE)
-        
-        if limit_match:
-            limit_value = limit_match.group(1)
-            sql_query = re.sub(limit_pattern_end, '', sql_query, flags=re.IGNORECASE).strip()
-            sql_query = self._add_top_clause_to_query(sql_query, limit_value)
-        elif re.search(limit_pattern_mid, sql_query, re.IGNORECASE):
-            match = re.search(limit_pattern_mid, sql_query, re.IGNORECASE)
-            if match:
-                limit_value = match.group(1)
-                sql_query = re.sub(limit_pattern_mid, '', sql_query, flags=re.IGNORECASE).strip()
-                sql_query = self._add_top_clause_to_query(sql_query, limit_value)
-        
-        # Final validation: Check if LIMIT still exists
-        if re.search(r'\bLIMIT\b', sql_query, re.IGNORECASE):
-            print(f"⚠️ WARNING: LIMIT syntax still detected in SQL: {sql_query}")
-            sql_query = re.sub(r'\bLIMIT\s+(\d+)\b', '', sql_query, flags=re.IGNORECASE)
-            if not re.search(r'\bTOP\s+\d+\b', sql_query, re.IGNORECASE):
-                sql_query = re.sub(r'\bSELECT\b', 'SELECT TOP 10', sql_query, count=1, flags=re.IGNORECASE)
-        
-        return sql_query
-    
-    def _validate_table_prefixes(self, sql_query: str) -> str:
-        """Ensure dev. prefix is used for known tables"""
-        table_names = ["cliente", "cliente_cedi", "mercado", "producto", "segmentacion", "tiempo"]
-        
-        for table in table_names:
-            # Replace FROM table with FROM dev.table
-            sql_query = re.sub(rf'\bFROM\s+{table}\b', f'FROM dev.{table}', sql_query, flags=re.IGNORECASE)
-            # Replace JOIN table with JOIN dev.table
-            sql_query = re.sub(rf'\bJOIN\s+{table}\b', f'JOIN dev.{table}', sql_query, flags=re.IGNORECASE)
-        
-        return sql_query
-    
-    def _final_cleanup(self, sql_query: str) -> str:
-        """Final cleanup and validation"""
-        # Ensure proper statement termination
-        if not sql_query.endswith(';'):
-            sql_query += ';'
-        
-        return sql_query
-    
-    def _extract_tables_from_sql(self, sql_query: str) -> list:
-        """
-        Extract table names used in SQL query
-        """
-        # Simple regex to find table names after FROM and JOIN
-        tables = []
-        patterns = [
-            r'FROM\s+(?:dev\.)?(\w+)',
-            r'JOIN\s+(?:dev\.)?(\w+)'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, sql_query, re.IGNORECASE)
-            tables.extend(matches)
-        
-        return list(set(tables))  # Remove duplicates
-    
-    def _determine_query_type(self, sql_query: str) -> str:
-        """
-        Determine the type of SQL query
-        """
-        sql_upper = sql_query.upper()
-        
-        if 'SELECT' in sql_upper:
-            if 'GROUP BY' in sql_upper:
-                return "AGGREGATION"
-            elif 'JOIN' in sql_upper:
-                return "JOIN_QUERY"
-            else:
-                return "SIMPLE_SELECT"
-        elif 'INSERT' in sql_upper:
-            return "INSERT"
-        elif 'UPDATE' in sql_upper:
-            return "UPDATE"
-        elif 'DELETE' in sql_upper:
-            return "DELETE"
-        else:
-            return "UNKNOWN"
-    
+    # ===============================
+    # LEGACY METHODS - MOVED TO SERVICES
+    # ===============================
+    # The following SQL cleaning and utility methods have been moved to:
+    # - SQLUtilityService: SQL cleaning, extraction, and validation
+    # - ErrorHandlingService: Standardized error handling
+    # - TemplateService: Template management and selection
+    # 
+    # This eliminates code duplication and provides centralized services
+    # that can be used across all agents consistently.
+    # ===============================
+
     def _add_top_clause_to_query(self, sql_query: str, limit_value: str) -> str:
         """
         Add TOP clause to the appropriate SELECT statement in a query.
