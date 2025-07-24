@@ -45,12 +45,12 @@ class AgentResponse(BaseModel):
     confidence_level: str = Field("medium", description="Response confidence: low, medium, high")
     
     # Legacy fields (maintained for backward compatibility)
-    summary: Optional[Any] = Field(None, description="Legacy summary field")
-    insights: Optional[Any] = Field(None, description="Legacy insights field") 
+    #summary: Optional[Any] = Field(None, description="Legacy summary field")
+    #insights: Optional[Any] = Field(None, description="Legacy insights field") 
     
     # Performance tracking
-    tokens: Optional[LogTokens] = None
-    execution_time_ms: Optional[int] = None
+    #tokens: Optional[LogTokens] = None
+    #execution_time_ms: Optional[int] = None
     
     def model_dump(self, **kwargs):
         """Custom model_dump method to handle datetime serialization"""

@@ -703,9 +703,39 @@ class OrchestratorMemoryService:
             processing_time_ms: Processing time in milliseconds
         """
         try:
-            # Generate proper embedding using Azure OpenAI text-embedding-3-small
+            # Build enhanced embedding text with result summaries for richer semantic search
             query_text = workflow_context.user_input
-            embedding = await self._generate_text_embedding(query_text)
+            embedding_text_parts = [f"Query: {query_text}"]
+            
+            # Add SQL query
+            if sql_query:
+                embedding_text_parts.append(f"SQL: {sql_query}")
+            
+            # Add result summary for richer semantic matching
+            if formatted_results and hasattr(formatted_results, 'rows') and formatted_results.rows:
+                row_count = len(formatted_results.rows)
+                embedding_text_parts.append(f"Results: {row_count} rows returned")
+                
+                # Add sample of first row keys for schema understanding
+                if row_count > 0 and isinstance(formatted_results.rows[0], dict):
+                    columns = list(formatted_results.rows[0].keys())[:5]  # First 5 columns
+                    embedding_text_parts.append(f"Columns: {', '.join(columns)}")
+            
+            # Add key insights for business context
+            if agent_response and agent_response.key_insights:
+                top_insights = agent_response.key_insights[:2]  # Top 2 insights
+                insights_text = "; ".join(top_insights)[:200]  # Limit length
+                embedding_text_parts.append(f"Insights: {insights_text}")
+            
+            # Add executive summary snippet for business context
+            if agent_response and agent_response.executive_summary:
+                summary_snippet = agent_response.executive_summary[:150]  # First 150 chars
+                embedding_text_parts.append(f"Summary: {summary_snippet}")
+            
+            enhanced_embedding_text = " -> ".join(embedding_text_parts)
+            
+            # Generate proper embedding using Azure OpenAI text-embedding-3-small
+            embedding = await self._generate_text_embedding(enhanced_embedding_text)
             
             if not embedding:
                 logger.warning(f"Failed to generate embedding for workflow {workflow_context.workflow_id}")
@@ -737,11 +767,11 @@ class OrchestratorMemoryService:
                 metadata["total_rows"] = getattr(formatted_results, 'total_rows', 0)
                 metadata["result_success"] = getattr(formatted_results, 'success', False)
             
-            # Store in cache
+            # Store in cache with enhanced embedding text
             await self.cosmos_service.set_vector_embedding_async(
                 key=cache_key,
                 embedding=embedding,
-                text=f"Query: {query_text} -> SQL: {sql_query or 'No SQL'}",
+                text=enhanced_embedding_text,
                 metadata=metadata
             )
             
