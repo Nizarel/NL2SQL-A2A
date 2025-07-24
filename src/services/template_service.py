@@ -1,10 +1,11 @@
 """
-Template Service - Unified template management for SQL generation
-Consolidates template loading and provides dynamic template selection
+Template Service - Advanced unified template management for SQL generation
+Consolidates template loading and provides intelligent dynamic template selection
 """
 
 import os
 from typing import Dict, Any, Optional
+from datetime import datetime
 from semantic_kernel.prompt_template.prompt_template_config import PromptTemplateConfig
 from semantic_kernel.functions.kernel_function_from_prompt import KernelFunctionFromPrompt
 from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
@@ -282,20 +283,235 @@ Provide analysis in JSON format with:
     
     def _normalize_complexity_level(self, complexity_level: str) -> str:
         """
-        Normalize complexity level input
+        Enhanced complexity level normalization with more granular options
         """
         level_map = {
+            # Basic level variations
             "basic": "basic",
             "simple": "basic",
-            "intermediate": "intermediate",
+            "easy": "basic",
+            "beginner": "basic",
+            
+            # Intermediate level variations
+            "intermediate": "intermediate", 
             "medium": "intermediate",
+            "standard": "intermediate",
+            "regular": "intermediate",
+            
+            # Enhanced level variations
             "enhanced": "enhanced",
             "complex": "enhanced",
+            "sophisticated": "enhanced",
+            "optimized": "enhanced",
+            
+            # Advanced level variations
             "advanced": "advanced",
-            "maximum": "advanced"
+            "maximum": "advanced",
+            "expert": "advanced",
+            "enterprise": "advanced",
+            "production": "advanced",
+            
+            # New ultra level for maximum optimization
+            "ultra": "ultra",
+            "extreme": "ultra",
+            "maximum_performance": "ultra"
         }
         
-        return level_map.get(complexity_level.lower(), "basic")
+        normalized = level_map.get(complexity_level.lower(), "basic")
+        
+        # Log complexity level selection for analytics
+        self._log_complexity_selection(complexity_level, normalized)
+        
+        return normalized
+    
+    def _log_complexity_selection(self, original: str, normalized: str) -> None:
+        """
+        Log template complexity selection for analytics
+        """
+        if not hasattr(self, '_complexity_stats'):
+            self._complexity_stats = {}
+        
+        if normalized not in self._complexity_stats:
+            self._complexity_stats[normalized] = 0
+        self._complexity_stats[normalized] += 1
+    
+    def get_complexity_analytics(self) -> Dict[str, Any]:
+        """
+        Get analytics on template complexity usage
+        """
+        if not hasattr(self, '_complexity_stats'):
+            return {"message": "No complexity analytics available"}
+        
+        total_uses = sum(self._complexity_stats.values())
+        analytics = {
+            "total_template_uses": total_uses,
+            "complexity_distribution": {},
+            "most_used_complexity": None,
+            "least_used_complexity": None
+        }
+        
+        if total_uses > 0:
+            # Calculate percentages
+            for level, count in self._complexity_stats.items():
+                analytics["complexity_distribution"][level] = {
+                    "count": count,
+                    "percentage": round((count / total_uses) * 100, 2)
+                }
+            
+            # Find most and least used
+            analytics["most_used_complexity"] = max(self._complexity_stats, key=self._complexity_stats.get)
+            analytics["least_used_complexity"] = min(self._complexity_stats, key=self._complexity_stats.get)
+        
+        return analytics
+    
+    def recommend_complexity_level(self, question: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Intelligently recommend template complexity based on question analysis
+        
+        Args:
+            question: User's natural language question
+            context: Additional context for complexity determination
+            
+        Returns:
+            Recommended complexity level
+        """
+        question_lower = question.lower()
+        
+        # Indicators for different complexity levels
+        basic_indicators = [
+            "show", "list", "get", "find", "what is", "how many", "count", "total"
+        ]
+        
+        intermediate_indicators = [
+            "join", "group by", "order by", "where", "filter", "average", "sum", 
+            "max", "min", "between", "in", "like"
+        ]
+        
+        enhanced_indicators = [
+            "complex", "multiple", "relationship", "correlation", "trend", "analysis",
+            "compare", "ranking", "top", "bottom", "performance", "insight"
+        ]
+        
+        advanced_indicators = [
+            "optimization", "efficiency", "advanced", "sophisticated", "enterprise",
+            "production", "high-performance", "scalable", "with cte", "recursive"
+        ]
+        
+        ultra_indicators = [
+            "ultra", "extreme", "maximum", "enterprise-grade", "mission-critical",
+            "high-volume", "real-time", "distributed", "parallel"
+        ]
+        
+        # Count indicators
+        basic_score = sum(1 for indicator in basic_indicators if indicator in question_lower)
+        intermediate_score = sum(1 for indicator in intermediate_indicators if indicator in question_lower)
+        enhanced_score = sum(1 for indicator in enhanced_indicators if indicator in question_lower)
+        advanced_score = sum(1 for indicator in advanced_indicators if indicator in question_lower)
+        ultra_score = sum(1 for indicator in ultra_indicators if indicator in question_lower)
+        
+        # Add context-based scoring
+        if context:
+            if context.get("table_count", 0) > 3:
+                enhanced_score += 1
+            if context.get("join_count", 0) > 2:
+                advanced_score += 1
+            if context.get("aggregation_count", 0) > 1:
+                intermediate_score += 1
+        
+        # Determine complexity based on highest score
+        scores = {
+            "ultra": ultra_score,
+            "advanced": advanced_score,
+            "enhanced": enhanced_score,
+            "intermediate": intermediate_score,
+            "basic": basic_score
+        }
+        
+        recommended = max(scores, key=scores.get)
+        
+        # Fallback to basic if all scores are 0
+        if all(score == 0 for score in scores.values()):
+            recommended = "basic"
+        
+        return recommended
+    
+    def create_custom_template(
+        self,
+        template_name: str,
+        template_content: str,
+        complexity_level: str = "custom",
+        description: Optional[str] = None
+    ) -> bool:
+        """
+        Create and register a custom template
+        
+        Args:
+            template_name: Unique name for the template
+            template_content: Jinja2 template content
+            complexity_level: Complexity level assignment
+            description: Optional template description
+            
+        Returns:
+            True if template created successfully
+        """
+        try:
+            # Validate template syntax (basic validation)
+            if "{{" not in template_content or "}}" not in template_content:
+                raise ValueError("Template content appears to be invalid (no template variables found)")
+            
+            # Store custom template
+            if not hasattr(self, '_custom_templates'):
+                self._custom_templates = {}
+            
+            self._custom_templates[template_name] = {
+                "content": template_content,
+                "complexity_level": complexity_level,
+                "description": description,
+                "created_at": datetime.now().isoformat(),
+                "usage_count": 0
+            }
+            
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Failed to create custom template '{template_name}': {e}")
+            return False
+    
+    def get_custom_templates(self) -> Dict[str, Any]:
+        """
+        Get all registered custom templates
+        """
+        if not hasattr(self, '_custom_templates'):
+            return {}
+        
+        return self._custom_templates.copy()
+    
+    def optimize_template_cache(self) -> Dict[str, Any]:
+        """
+        Optimize template cache by removing unused templates and organizing
+        """
+        optimization_stats = {
+            "templates_before": len(self._template_cache),
+            "templates_after": 0,
+            "memory_saved": 0,
+            "optimizations_applied": []
+        }
+        
+        # Remove unused templates (if usage tracking is available)
+        if hasattr(self, '_template_usage'):
+            unused_templates = [
+                name for name, usage in self._template_usage.items() 
+                if usage == 0
+            ]
+            for template_name in unused_templates:
+                if template_name in self._template_cache:
+                    del self._template_cache[template_name]
+                    optimization_stats["optimizations_applied"].append(f"Removed unused template: {template_name}")
+        
+        optimization_stats["templates_after"] = len(self._template_cache)
+        optimization_stats["memory_saved"] = optimization_stats["templates_before"] - optimization_stats["templates_after"]
+        
+        return optimization_stats
     
     def get_template_stats(self) -> Dict[str, Any]:
         """

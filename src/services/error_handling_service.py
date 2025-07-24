@@ -1,20 +1,50 @@
 """
-Error Handling Service - Standardized error handling across all agents
-Provides consistent error formatting, logging, and response patterns
+Error Handling Service - Advanced standardized error handling across all agents
+Provides consistent error formatting, logging, categorization, and response patterns
 """
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime, timezone
+from enum import Enum
+
+
+class ErrorCategory(Enum):
+    """Comprehensive error categories for better classification"""
+    SQL_SYNTAX = "sql_syntax"
+    SQL_EXECUTION = "sql_execution"
+    DATABASE_CONNECTION = "database_connection"
+    SCHEMA_ANALYSIS = "schema_analysis"
+    TEMPLATE_PROCESSING = "template_processing"
+    AGENT_COMMUNICATION = "agent_communication"
+    VALIDATION = "validation"
+    AUTHENTICATION = "authentication"
+    TIMEOUT = "timeout"
+    RESOURCE_LIMIT = "resource_limit"
+    DATA_FORMAT = "data_format"
+    CONFIGURATION = "configuration"
+    NETWORK = "network"
+    MEMORY = "memory"
+    GENERAL = "general"
+
+
+class ErrorSeverity(Enum):
+    """Error severity levels for proper escalation"""
+    CRITICAL = "critical"      # System failure, immediate attention
+    HIGH = "high"             # Major functionality affected
+    MEDIUM = "medium"         # Minor functionality affected  
+    LOW = "low"               # Cosmetic or minor issues
+    INFO = "info"             # Informational messages
 
 
 class ErrorHandlingService:
     """
-    Centralized service for error handling operations including:
-    - Standardized error formatting
-    - Error categorization and context
-    - Consistent logging patterns
-    - Error recovery suggestions
+    Advanced centralized service for error handling operations including:
+    - Comprehensive error categorization
+    - Severity-based error classification
+    - Context-aware error recovery
+    - Intelligent suggestion generation
+    - Performance impact assessment
     """
     
     @staticmethod
@@ -384,3 +414,277 @@ class ErrorHandlingService:
             )
             
             return error_response
+    
+    @staticmethod
+    def categorize_error(error: Exception, context: Optional[Dict[str, Any]] = None) -> ErrorCategory:
+        """
+        Intelligently categorize errors based on type and context
+        
+        Args:
+            error: The exception that occurred
+            context: Additional context for categorization
+            
+        Returns:
+            Appropriate error category
+        """
+        error_str = str(error).lower()
+        error_type = type(error).__name__.lower()
+        
+        # SQL-related errors
+        if any(keyword in error_str for keyword in ['syntax', 'sql', 'query', 'column', 'table']):
+            if 'syntax' in error_str or 'invalid' in error_str:
+                return ErrorCategory.SQL_SYNTAX
+            else:
+                return ErrorCategory.SQL_EXECUTION
+        
+        # Connection and network errors
+        if any(keyword in error_str for keyword in ['connection', 'timeout', 'network', 'unreachable']):
+            if 'timeout' in error_str:
+                return ErrorCategory.TIMEOUT
+            else:
+                return ErrorCategory.DATABASE_CONNECTION
+        
+        # Authentication errors
+        if any(keyword in error_str for keyword in ['auth', 'permission', 'forbidden', 'unauthorized']):
+            return ErrorCategory.AUTHENTICATION
+        
+        # Memory and resource errors
+        if any(keyword in error_str for keyword in ['memory', 'limit', 'quota', 'resource']):
+            return ErrorCategory.RESOURCE_LIMIT
+        
+        # Template and schema errors
+        if any(keyword in error_str for keyword in ['template', 'jinja', 'render']):
+            return ErrorCategory.TEMPLATE_PROCESSING
+        if any(keyword in error_str for keyword in ['schema', 'metadata']):
+            return ErrorCategory.SCHEMA_ANALYSIS
+        
+        # Configuration errors
+        if any(keyword in error_str for keyword in ['config', 'setting', 'env', 'variable']):
+            return ErrorCategory.CONFIGURATION
+        
+        # Validation errors
+        if any(keyword in error_str for keyword in ['validation', 'invalid', 'format']):
+            return ErrorCategory.VALIDATION
+        
+        return ErrorCategory.GENERAL
+    
+    @staticmethod
+    def determine_severity(
+        error: Exception, 
+        category: ErrorCategory, 
+        context: Optional[Dict[str, Any]] = None
+    ) -> ErrorSeverity:
+        """
+        Determine error severity based on category and impact
+        
+        Args:
+            error: The exception that occurred
+            category: Error category
+            context: Additional context for severity determination
+            
+        Returns:
+            Appropriate error severity level
+        """
+        # Critical errors that break core functionality
+        critical_categories = [
+            ErrorCategory.DATABASE_CONNECTION,
+            ErrorCategory.AUTHENTICATION,
+            ErrorCategory.MEMORY
+        ]
+        
+        # High severity errors that impact major features
+        high_categories = [
+            ErrorCategory.SQL_EXECUTION,
+            ErrorCategory.AGENT_COMMUNICATION,
+            ErrorCategory.CONFIGURATION
+        ]
+        
+        # Medium severity errors that impact specific features
+        medium_categories = [
+            ErrorCategory.SQL_SYNTAX,
+            ErrorCategory.SCHEMA_ANALYSIS,
+            ErrorCategory.TEMPLATE_PROCESSING,
+            ErrorCategory.TIMEOUT
+        ]
+        
+        if category in critical_categories:
+            return ErrorSeverity.CRITICAL
+        elif category in high_categories:
+            return ErrorSeverity.HIGH
+        elif category in medium_categories:
+            return ErrorSeverity.MEDIUM
+        else:
+            return ErrorSeverity.LOW
+    
+    @staticmethod
+    def generate_intelligent_suggestions(
+        error: Exception,
+        category: ErrorCategory,
+        context: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """
+        Generate intelligent recovery suggestions based on error analysis
+        
+        Args:
+            error: The exception that occurred
+            category: Error category
+            context: Additional context for suggestion generation
+            
+        Returns:
+            List of actionable recovery suggestions
+        """
+        suggestions = []
+        error_str = str(error).lower()
+        
+        if category == ErrorCategory.SQL_SYNTAX:
+            suggestions.extend([
+                "Check SQL syntax for missing commas, quotes, or parentheses",
+                "Verify table and column names are spelled correctly",
+                "Ensure proper JOIN syntax and conditions",
+                "Validate WHERE clause formatting"
+            ])
+        
+        elif category == ErrorCategory.SQL_EXECUTION:
+            suggestions.extend([
+                "Verify database connection is active",
+                "Check if referenced tables and columns exist",
+                "Ensure user has appropriate permissions",
+                "Review query complexity and timeout settings"
+            ])
+        
+        elif category == ErrorCategory.DATABASE_CONNECTION:
+            suggestions.extend([
+                "Verify database server is running and accessible",
+                "Check network connectivity to database",
+                "Validate connection string parameters",
+                "Ensure firewall rules allow database access"
+            ])
+        
+        elif category == ErrorCategory.TEMPLATE_PROCESSING:
+            suggestions.extend([
+                "Check template file exists and is readable",
+                "Verify template syntax is valid Jinja2",
+                "Ensure all required template variables are provided",
+                "Check for circular template includes"
+            ])
+        
+        elif category == ErrorCategory.AUTHENTICATION:
+            suggestions.extend([
+                "Verify API keys and credentials are correct",
+                "Check if credentials have expired",
+                "Ensure user has appropriate permissions",
+                "Validate authentication configuration"
+            ])
+        
+        elif category == ErrorCategory.TIMEOUT:
+            suggestions.extend([
+                "Increase timeout settings for complex operations",
+                "Optimize query performance to reduce execution time",
+                "Check network latency and connection stability",
+                "Consider breaking large operations into smaller chunks"
+            ])
+        
+        elif category == ErrorCategory.RESOURCE_LIMIT:
+            suggestions.extend([
+                "Check available memory and disk space",
+                "Review resource quotas and limits",
+                "Optimize query to reduce resource usage",
+                "Consider scaling up resources if needed"
+            ])
+        
+        else:
+            suggestions.extend([
+                "Review error logs for detailed information",
+                "Check system configuration and settings",
+                "Verify all dependencies are properly installed",
+                "Contact support if issue persists"
+            ])
+        
+        return suggestions
+    
+    @staticmethod
+    def create_enhanced_error_response(
+        error: Exception,
+        context: Optional[Dict[str, Any]] = None,
+        correlation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create comprehensive error response with intelligent analysis
+        
+        Args:
+            error: The exception that occurred
+            context: Additional context information
+            correlation_id: Request correlation ID
+            
+        Returns:
+            Enhanced error response with categorization and suggestions
+        """
+        category = ErrorHandlingService.categorize_error(error, context)
+        severity = ErrorHandlingService.determine_severity(error, category, context)
+        suggestions = ErrorHandlingService.generate_intelligent_suggestions(error, category, context)
+        
+        return {
+            "success": False,
+            "error": str(error),
+            "error_type": category.value,
+            "severity": severity.value,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "correlation_id": correlation_id,
+            "context": context or {},
+            "suggestions": suggestions,
+            "data": None,
+            "metadata": {
+                "error_occurred": True,
+                "error_category": category.value,
+                "error_severity": severity.value,
+                "recovery_suggestions": suggestions,
+                "error_class": type(error).__name__,
+                "analysis": {
+                    "auto_categorized": True,
+                    "severity_determined": True,
+                    "suggestions_generated": len(suggestions)
+                }
+            }
+        }
+    
+    @staticmethod
+    def assess_performance_impact(
+        error: Exception,
+        category: ErrorCategory,
+        processing_time: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Assess the performance impact of an error
+        
+        Args:
+            error: The exception that occurred
+            category: Error category
+            processing_time: Time taken before error occurred
+            
+        Returns:
+            Performance impact assessment
+        """
+        impact_level = "low"
+        impact_description = "Minimal performance impact"
+        
+        # High impact categories
+        if category in [ErrorCategory.DATABASE_CONNECTION, ErrorCategory.MEMORY, ErrorCategory.RESOURCE_LIMIT]:
+            impact_level = "high"
+            impact_description = "Significant performance degradation expected"
+        
+        # Medium impact categories
+        elif category in [ErrorCategory.SQL_EXECUTION, ErrorCategory.TIMEOUT, ErrorCategory.NETWORK]:
+            impact_level = "medium"
+            impact_description = "Moderate performance impact on specific operations"
+        
+        return {
+            "impact_level": impact_level,
+            "description": impact_description,
+            "processing_time": processing_time,
+            "category": category.value,
+            "recommendations": {
+                "monitor": impact_level in ["high", "medium"],
+                "alert": impact_level == "high",
+                "investigate": impact_level == "high"
+            }
+        }
