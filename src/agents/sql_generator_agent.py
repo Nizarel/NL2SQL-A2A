@@ -1,10 +1,6 @@
-"""
-Enhanced SQL Generator Agent - Analyzes user intent and generates optimized SQL queries
-with complexity analysis and adaptive templating
-"""
-
 import re
 import os
+import time
 import hashlib
 from typing import Dict, Any, List
 from semantic_kernel import Kernel
@@ -13,6 +9,8 @@ from agents.base_agent import BaseAgent
 from services.sql_utility_service import SQLUtilityService
 from services.error_handling_service import ErrorHandlingService
 from services.template_service import TemplateService
+from services.monitoring_service import monitoring_service
+from services.configuration_service import config_service
 
 
 class SQLGeneratorAgent(BaseAgent):
@@ -37,8 +35,37 @@ class SQLGeneratorAgent(BaseAgent):
     
     def __init__(self, kernel: Kernel):
         super().__init__(kernel, "SQLGeneratorAgent")
+        
+        # Enhanced configuration management with fallback
+        try:
+            self.sql_generator_config = config_service.get_config("sql_generator") or {}
+        except ValueError:
+            # Fallback to default configuration if section doesn't exist
+            self.sql_generator_config = {
+                "default_limit": 100,
+                "max_complexity_score": 1.0,
+                "template_selection_mode": "adaptive",
+                "performance_tracking": True,
+                "optimization_level": "high"
+            }
+            print("⚠️ Using default SQL generator configuration (sql_generator section not found)")
+        
+        # Initialize services
         self.template_service = TemplateService()
         self.template_service.initialize_templates()
+        
+        # Initialize performance monitoring
+        self.monitoring_service = monitoring_service
+        self._initialize_performance_tracking()
+        
+    def _initialize_performance_tracking(self):
+        """Initialize performance monitoring for SQL generation"""
+        try:
+            # Register SQL generator specific metrics
+            self.monitoring_service.record_metric("sql_generator_initialized", 1)
+            print("📊 SQL Generator monitoring initialized")
+        except Exception as e:
+            print(f"⚠️ Failed to initialize SQL Generator monitoring: {str(e)}")
         
     def _setup_templates(self):
         """
@@ -50,7 +77,7 @@ class SQLGeneratorAgent(BaseAgent):
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Enhanced process method with complexity analysis and adaptive templating
+        Enhanced process method with complexity analysis, adaptive templating, and service integration
         
         Args:
             input_data: Dictionary containing:
@@ -62,59 +89,101 @@ class SQLGeneratorAgent(BaseAgent):
         Returns:
             Dictionary containing generated SQL query, complexity analysis, and metadata
         """
+        processing_start_time = time.time()
+        correlation_id = input_data.get("correlation_id", f"sql_gen_{int(time.time())}")
+        
+        # Record processing start
+        self.monitoring_service.record_metric("sql_generator_requests", 1)
+        
         try:
+            # Enhanced input validation
             question = input_data.get("question", "")
             context = input_data.get("context", "")
             optimized_schema_context = input_data.get("optimized_schema_context")
             schema_analysis = input_data.get("schema_analysis")
             
+            # Enhanced validation with ConfigurationService
+            max_question_length = self.sql_generator_config.get("max_question_length", 1000)
             if not question:
-                return self._create_result(
-                    success=False,
-                    error="No question provided"
+                return ErrorHandlingService.create_enhanced_error_response(
+                    error=ValueError("No question provided for SQL generation"),
+                    context={"operation": "sql_generation_validation", "correlation_id": correlation_id}
                 )
             
-            # Schema context must be provided by orchestrator via optimized_schema_context
+            if len(question) > max_question_length:
+                return ErrorHandlingService.create_enhanced_error_response(
+                    error=ValueError(f"Question too long: {len(question)} > {max_question_length}"),
+                    context={"operation": "sql_generation_validation", "correlation_id": correlation_id}
+                )
+            
+            # Schema context validation with enhanced error handling
             if optimized_schema_context:
                 schema_context = optimized_schema_context
                 schema_source = "optimized"
                 print("🎯 Using optimized schema context from Schema Analyst")
             else:
-                # No fallback - orchestrator should always provide schema context
-                return self._create_result(
-                    success=False,
-                    error="No schema context provided. Schema Analyst should provide optimized context."
+                return ErrorHandlingService.create_enhanced_error_response(
+                    error=ValueError("No schema context provided. Schema Analyst should provide optimized context."),
+                    context={
+                        "operation": "schema_context_validation", 
+                        "correlation_id": correlation_id,
+                        "question": question[:100]
+                    }
                 )
             
-            # STEP 1: Analyze query complexity
+            # STEP 1: Analyze query complexity with performance tracking
+            complexity_start_time = time.time()
             complexity_analysis = self._analyze_query_complexity(question)
             complexity_score = complexity_analysis["complexity_score"]
+            complexity_time = time.time() - complexity_start_time
             
-            print(f"🔍 Query complexity score: {complexity_score:.2f} ({complexity_analysis['complexity_level']})")
+            self.monitoring_service.record_metric("sql_generator_complexity_analysis_time", complexity_time * 1000)
+            print(f"🔍 Query complexity score: {complexity_score:.2f} ({complexity_analysis['complexity_level']}) - {complexity_time:.3f}s")
             
             # STEP 2: Select appropriate template based on complexity
+            template_start_time = time.time()
             template_choice = self._select_template_by_complexity(complexity_score, question)
+            template_selection_time = time.time() - template_start_time
             
-            print(f"📋 Selected template: {template_choice}")
+            self.monitoring_service.record_metric("sql_generator_template_selection_time", template_selection_time * 1000)
+            print(f"📋 Selected template: {template_choice} - {template_selection_time:.3f}s")
             
             # STEP 3: Generate performance hints and optimization context
+            optimization_start_time = time.time()
             optimization_context = self._generate_optimization_context(
                 complexity_analysis, schema_analysis, question
             )
+            optimization_time = time.time() - optimization_start_time
+            
+            self.monitoring_service.record_metric("sql_generator_optimization_context_time", optimization_time * 1000)
             
             # STEP 4: Analyze user intent (enhanced with complexity context)
+            intent_start_time = time.time()
             intent_analysis = await self._analyze_intent(question, context, schema_analysis)
+            intent_time = time.time() - intent_start_time
+            
+            self.monitoring_service.record_metric("sql_generator_intent_analysis_time", intent_time * 1000)
             
             # STEP 5: Generate SQL query with adaptive template and optimization context
+            sql_generation_start_time = time.time()
             sql_query = await self._generate_sql_with_complexity(
                 question, schema_context, intent_analysis, 
                 schema_analysis, complexity_analysis, optimization_context, template_choice
             )
+            sql_generation_time = time.time() - sql_generation_start_time
             
-            # STEP 6: Clean and validate SQL
+            self.monitoring_service.record_metric("sql_generator_sql_generation_time", sql_generation_time * 1000)
+            
+            # STEP 6: Clean and validate SQL with performance tracking
+            cleaning_start_time = time.time()
             cleaned_sql = SQLUtilityService.clean_sql_query(sql_query)
+            cleaning_time = time.time() - cleaning_start_time
             
-            # STEP 7: Prepare enhanced metadata
+            self.monitoring_service.record_metric("sql_generator_sql_cleaning_time", cleaning_time * 1000)
+            
+            # STEP 7: Prepare enhanced metadata with performance data
+            total_processing_time = time.time() - processing_start_time
+            
             metadata = {
                 "schema_tables_used": SQLUtilityService.extract_tables_from_sql(cleaned_sql),
                 "query_type": SQLUtilityService.validate_sql_syntax(cleaned_sql).get("query_type"),
@@ -123,7 +192,17 @@ class SQLGeneratorAgent(BaseAgent):
                 "template_used": template_choice,
                 "complexity_score": complexity_score,
                 "complexity_level": complexity_analysis['complexity_level'],
-                "optimization_hints_applied": len(optimization_context.get('performance_hints', []))
+                "optimization_hints_applied": len(optimization_context.get('performance_hints', [])),
+                "correlation_id": correlation_id,
+                "performance_metrics": {
+                    "total_processing_time_ms": round(total_processing_time * 1000, 2),
+                    "complexity_analysis_time_ms": round(complexity_time * 1000, 2),
+                    "template_selection_time_ms": round(template_selection_time * 1000, 2),
+                    "optimization_context_time_ms": round(optimization_time * 1000, 2),
+                    "intent_analysis_time_ms": round(intent_time * 1000, 2),
+                    "sql_generation_time_ms": round(sql_generation_time * 1000, 2),
+                    "sql_cleaning_time_ms": round(cleaning_time * 1000, 2)
+                }
             }
             
             # Add schema analysis metadata if available
@@ -134,6 +213,10 @@ class SQLGeneratorAgent(BaseAgent):
                     "join_strategy": schema_analysis.get("join_strategy", {}).get("strategy", "unknown"),
                     "performance_hints_count": len(schema_analysis.get("performance_hints", []))
                 })
+            
+            # Record success metrics
+            self.monitoring_service.record_metric("sql_generator_success_rate", 100.0)
+            self.monitoring_service.record_metric("sql_generator_total_processing_time", total_processing_time * 1000)
             
             return self._create_result(
                 success=True,
@@ -148,190 +231,201 @@ class SQLGeneratorAgent(BaseAgent):
             )
             
         except Exception as e:
+            # Enhanced error handling with performance context
+            processing_time = time.time() - processing_start_time
+            self.monitoring_service.record_metric("sql_generator_success_rate", 0.0)
+            self.monitoring_service.record_metric("sql_generator_error_count", 1)
+            
             return ErrorHandlingService.handle_agent_processing_error(
                 error=e,
                 agent_name="SQLGeneratorAgent",
                 input_data=input_data,
-                step="enhanced_sql_generation"
+                step="enhanced_sql_generation",
+                context={
+                    "correlation_id": correlation_id,
+                    "processing_time_ms": round(processing_time * 1000, 2),
+                    "question": question[:100] if 'question' in locals() else "unknown"
+                }
             )
     
     def _analyze_query_complexity(self, question: str) -> Dict[str, Any]:
         """
         Analyze query complexity based on various indicators using optimized pattern groups
+        Enhanced with performance tracking and configurable thresholds
         
         Returns complexity score (0.0 - 1.0) and detailed analysis
         """
-        # Grouped complexity indicators for better performance
-        complexity_pattern_groups = {
-            'multi_step_indicators': {
-                'patterns': [
-                    r'\b(each|every|per|for\s+each|by\s+each)\b.*\b(cedi|region|territory|location)\b',
-                    r'\b(highest|best|top|maximum|most|greatest)\b.*\b(profit|revenue|sales)\b.*\b(each|every|per)\b',
-                    r'\b(which|what).*\b(product|category)\b.*\b(highest|best|top)\b.*\b(each|every|per)\b',
-                    r'\b(compare|comparison|versus|vs|against)\b.*\b(across|between|within)\b',
-                    r'\b(both|all|multiple)\b.*\b(product|category|dimension|level)\b'
-                ],
-                'weight': 0.6
-            },
-            'join_indicators': {
-                'patterns': [
-                    r'\b(join|joins|joining|combine|merge|connect)\b',
-                    r'\b(multiple tables|several tables|across tables)\b',
-                    r'\b(left join|right join|outer join|inner join)\b'
-                ],
-                'weight': 0.4
-            },
-            'aggregation_indicators': {
-                'patterns': [
-                    r'\b(group by|grouping|aggregate|sum|count|average|min|max|total)\b',
-                    r'\b(having|group having)\b'
-                ],
-                'weight': 0.35
-            },
-            'advanced_patterns': {
-                'patterns': [
-                    r'\b(subquery|nested|sub-query|within|inside)\b',
-                    r'\b(window function|partition|over|rank|row_number)\b',
-                    r'\b(cte|common table|recursive)\b'
-                ],
-                'weight': 0.5
-            },
-            'analytical_functions': {
-                'patterns': [
-                    r'\b(top|bottom|rank|percentile|quartile|best|worst|highest|lowest)\b',
-                    r'\b(trend|analysis|analytics|compare|comparison)\b',
-                    r'\b(year over year|month over month|time series)\b'
-                ],
-                'weight': 0.35
-            },
-            'complexity_modifiers': {
-                'patterns': [
-                    r'\b(multiple|several|various|different|distinct)\b',
-                    r'\b(complex|complicated|advanced)\b',
-                    r'\b(all|everything|entire|complete|full)\b',
-                    r'\b(detailed|detail|comprehensive)\b'
-                ],
-                'weight': 0.25
-            },
-            'temporal_patterns': {
-                'patterns': [
-                    r'\b(last|previous|past|recent|since|between|range)\b',
-                    r'\b(monthly|yearly|quarterly|weekly|daily)\b',
-                    r'\b(months?|years?|days?|weeks?|time period)\b'
-                ],
-                'weight': 0.2
-            },
-            'business_patterns': {
-                'patterns': [
-                    r'\b(revenue|sales|profit|income|earnings)\b',
-                    r'\b(customer|client|product|category|region|market)\b',
-                    r'\b(by\s+\w+|per\s+\w+|for\s+each)\b'
-                ],
-                'weight': 0.15
+        analysis_start_time = time.time()
+        
+        try:
+            # Get complexity analysis configuration
+            enable_detailed_analysis = self.sql_generator_config.get("enable_detailed_complexity_analysis", True)
+            complexity_threshold_high = self.sql_generator_config.get("complexity_threshold_high", 0.75)
+            complexity_threshold_medium = self.sql_generator_config.get("complexity_threshold_medium", 0.3)
+            
+            # Grouped complexity indicators for better performance
+            complexity_pattern_groups = {
+                'multi_step_indicators': {
+                    'patterns': [
+                        r'\b(each|every|per|for\s+each|by\s+each)\b.*\b(cedi|region|territory|location)\b',
+                        r'\b(highest|best|top|maximum|most|greatest)\b.*\b(profit|revenue|sales)\b.*\b(each|every|per)\b',
+                        r'\b(which|what).*\b(product|category)\b.*\b(highest|best|top)\b.*\b(each|every|per)\b',
+                        r'\b(compare|comparison|versus|vs|against)\b.*\b(across|between|within)\b',
+                        r'\b(both|all|multiple)\b.*\b(product|category|dimension|level)\b'
+                    ],
+                    'weight': 0.6
+                },
+                'join_indicators': {
+                    'patterns': [
+                        r'\b(join|joins|joining|combine|merge|connect)\b',
+                        r'\b(multiple tables|several tables|across tables)\b',
+                        r'\b(left join|right join|outer join|inner join)\b'
+                    ],
+                    'weight': 0.4
+                },
+                'aggregation_indicators': {
+                    'patterns': [
+                        r'\b(group by|grouping|aggregate|sum|count|average|min|max|total)\b',
+                        r'\b(having|group having)\b'
+                    ],
+                    'weight': 0.35
+                },
+                'advanced_patterns': {
+                    'patterns': [
+                        r'\b(subquery|nested|sub-query|within|inside)\b',
+                        r'\b(window function|partition|over|rank|row_number)\b',
+                        r'\b(cte|common table|recursive)\b'
+                    ],
+                    'weight': 0.5
+                },
+                'analytical_functions': {
+                    'patterns': [
+                        r'\b(top|bottom|rank|percentile|quartile|best|worst|highest|lowest)\b',
+                        r'\b(trend|analysis|analytics|compare|comparison)\b',
+                        r'\b(year over year|month over month|time series)\b'
+                    ],
+                    'weight': 0.35
+                },
+                'complexity_modifiers': {
+                    'patterns': [
+                        r'\b(multiple|several|various|different|distinct)\b',
+                        r'\b(complex|complicated|advanced)\b',
+                        r'\b(all|everything|entire|complete|full)\b',
+                        r'\b(detailed|detail|comprehensive)\b'
+                    ],
+                    'weight': 0.25
+                },
+                'temporal_patterns': {
+                    'patterns': [
+                        r'\b(last|previous|past|recent|since|between|range)\b',
+                        r'\b(monthly|yearly|quarterly|weekly|daily)\b',
+                        r'\b(months?|years?|days?|weeks?|time period)\b'
+                    ],
+                    'weight': 0.2
+                },
+                'business_patterns': {
+                    'patterns': [
+                        r'\b(revenue|sales|profit|income|earnings)\b',
+                        r'\b(customer|client|product|category|region|market)\b',
+                        r'\b(by\s+\w+|per\s+\w+|for\s+each)\b'
+                    ],
+                    'weight': 0.15
+                }
             }
-        }
-        
-        # Calculate base complexity score
-        score = 0.0
-        matched_patterns = []
-        question_lower = str(question).lower() if question else ""
-        
-        # Process pattern groups efficiently
-        for group_name, group_data in complexity_pattern_groups.items():
-            group_match = False
-            weight = float(group_data.get('weight', 0.0))  # Ensure weight is float
-            for pattern in group_data['patterns']:
-                try:
-                    if re.search(pattern, question_lower):
-                        if not group_match:  # Only count once per group to avoid over-scoring
-                            score += weight
-                            group_match = True
-                        matched_patterns.append(f"{group_name}:{pattern.split('|')[0].replace('\\b', '').replace('(', '')}")
-                except (TypeError, AttributeError) as e:
-                    print(f"⚠️ Pattern matching error for {pattern}: {e}")
-                    continue
+            
+            # Calculate base complexity score with performance tracking
+            score = 0.0
+            matched_patterns = []
+            question_lower = str(question).lower() if question else ""
+            
+            pattern_matching_start = time.time()
+            
+            # Process pattern groups efficiently
+            for group_name, group_data in complexity_pattern_groups.items():
+                group_match = False
+                weight = float(group_data.get('weight', 0.0))
+                for pattern in group_data['patterns']:
+                    try:
+                        if re.search(pattern, question_lower):
+                            if not group_match:  # Only count once per group to avoid over-scoring
+                                score += weight
+                                group_match = True
+                            matched_patterns.append(f"{group_name}:{pattern.split('|')[0].replace('\\b', '').replace('(', '')}")
+                    except (TypeError, AttributeError) as e:
+                        print(f"⚠️ Pattern matching error for {pattern}: {e}")
+                        continue
+            
+            pattern_matching_time = time.time() - pattern_matching_start
+            self.monitoring_service.record_metric("sql_generator_pattern_matching_time", pattern_matching_time * 1000)
+            
+            # Additional complexity factors with error handling
+            word_count = len(question.split()) if question else 0
+            if word_count > 15:
+                score += 0.1
+            if word_count > 25:
+                score += 0.15
+            if word_count > 35:
+                score += 0.2
+            
+            # Question structure complexity
+            question_str = str(question) if question else ""
+            question_complexity = question_str.count('?') + question_str.count(',') * 0.1
+            score += min(question_complexity, 0.3)
+            
+            # Enhanced combination bonuses with configuration
+            if enable_detailed_analysis:
+                if any('aggregation' in pattern for pattern in matched_patterns) and \
+                   any('temporal' in pattern for pattern in matched_patterns):
+                    score += 0.2  # Time-based aggregation bonus
+                
+                if any('analytical' in pattern for pattern in matched_patterns) and \
+                   any('business' in pattern for pattern in matched_patterns):
+                    score += 0.15  # Business analytics bonus
                     
-        # Additional complexity factors
-        word_count = len(question.split())
-        try:
-            if word_count > 15:
-                score += 0.1
-            if word_count > 25:
-                score += 0.15
-            if word_count > 35:
-                score += 0.2
-        except TypeError:
-            # Handle case where word_count might not be an integer
-            word_count = int(len(question.split())) if question else 0
-            if word_count > 15:
-                score += 0.1
-            if word_count > 25:
-                score += 0.15
-            if word_count > 35:
-                score += 0.2
-        
-        # Question structure complexity
-        try:
-            question_complexity = question.count('?') + question.count(',') * 0.1
-            score += min(question_complexity, 0.3)
-        except TypeError:
-            # Handle case where question might not be a string
-            question = str(question) if question else ""
-            question_complexity = question.count('?') + question.count(',') * 0.1
-            score += min(question_complexity, 0.3)
-        
-        # Combination bonuses
-        if any('aggregation' in pattern for pattern in matched_patterns) and \
-           any('temporal' in pattern for pattern in matched_patterns):
-            score += 0.2  # Time-based aggregation bonus
-        
-        if any('analytical' in pattern for pattern in matched_patterns) and \
-           any('business' in pattern for pattern in matched_patterns):
-            score += 0.15  # Business analytics bonus
+                # Multi-step analysis bonus with enhanced detection
+                if any('multi_step' in pattern for pattern in matched_patterns):
+                    multi_dimensional_phrases = [
+                        "compare.*and.*across", "both.*and.*by", "multiple.*perspective", 
+                        "various.*dimension", "different.*level.*analysis"
+                    ]
+                    truly_multi_dimensional = any(re.search(phrase, question_lower) for phrase in multi_dimensional_phrases)
+                    
+                    if truly_multi_dimensional:
+                        score += 0.3
+                        print("🔍 True multi-dimensional analysis patterns detected - boosting complexity score")
+                    else:
+                        score += 0.15
+                        print("🎯 Complex single-dimensional analysis detected - moderate complexity boost")
+                
+                # Enhanced multi-step detection
+                multi_step_phrases = [
+                    "for each", "per cedi", "by cedi", "each cedi", 
+                    "which product", "what product", "which category", "what category",
+                    "highest profit", "best performing", "top performer"
+                ]
+                
+                multi_step_matches = sum(1 for phrase in multi_step_phrases if phrase in question_lower)
+                if multi_step_matches >= 3:
+                    score += 0.2
+                    print(f"🎯 Multiple complexity indicators detected: {multi_step_matches}")
+                elif multi_step_matches >= 2:
+                    score += 0.1
+                    print(f"📊 Moderate complexity indicators detected: {multi_step_matches}")
             
-        # Multi-step analysis bonus - questions requiring multiple analytical perspectives
-        if any('multi_step' in pattern for pattern in matched_patterns):
-            # Be more selective about multi-step bonus - only for truly complex multi-dimensional questions
-            multi_dimensional_phrases = [
-                "compare.*and.*across", "both.*and.*by", "multiple.*perspective", 
-                "various.*dimension", "different.*level.*analysis"
-            ]
-            truly_multi_dimensional = any(re.search(phrase, question_lower) for phrase in multi_dimensional_phrases)
+            # Ensure score is within bounds
+            score = min(max(float(score), 0.0), 1.0)
             
-            if truly_multi_dimensional:
-                score += 0.3  # Significant boost for truly multi-dimensional queries
-                print("🔍 True multi-dimensional analysis patterns detected - boosting complexity score")
-            else:
-                score += 0.15  # Moderate boost for complex but single-dimensional queries
-                print("🎯 Complex single-dimensional analysis detected - moderate complexity boost")
-        
-        # Additional multi-step detection based on question structure - be more conservative
-        multi_step_phrases = [
-            "for each", "per cedi", "by cedi", "each cedi", 
-            "which product", "what product", "which category", "what category",
-            "highest profit", "best performing", "top performer"
-        ]
-        
-        multi_step_matches = sum(1 for phrase in multi_step_phrases if phrase in question_lower)
-        if multi_step_matches >= 3:  # Require more matches to trigger multi-step
-            score += 0.2  # Reduced bonus
-            print(f"🎯 Multiple complexity indicators detected: {multi_step_matches}")
-        elif multi_step_matches >= 2:
-            score += 0.1  # Minor boost for moderate complexity
-            print(f"📊 Moderate complexity indicators detected: {multi_step_matches}")
-        score = min(float(score), 1.0)
-        
-        # Determine complexity level with adjusted thresholds
-        try:
-            if score >= 0.8:
-                complexity_level = "VERY_HIGH"
-                estimated_tables = "4+"
-                estimated_joins = "3+"
-            elif score >= 0.7:
-                complexity_level = "HIGH"
-                estimated_tables = "3+"
-                estimated_joins = "2+"
-            elif score >= 0.3:
+            # Determine complexity level with configurable thresholds
+            if score >= complexity_threshold_high:
+                if score >= 0.8:
+                    complexity_level = "VERY_HIGH"
+                    estimated_tables = "4+"
+                    estimated_joins = "3+"
+                else:
+                    complexity_level = "HIGH"
+                    estimated_tables = "3+"
+                    estimated_joins = "2+"
+            elif score >= complexity_threshold_medium:
                 complexity_level = "MEDIUM"
                 estimated_tables = "2-3"
                 estimated_joins = "1-2"
@@ -339,27 +433,52 @@ class SQLGeneratorAgent(BaseAgent):
                 complexity_level = "LOW"
                 estimated_tables = "1-2"
                 estimated_joins = "0-1"
-        except TypeError:
-            print(f"⚠️ Score comparison error, score: {score} (type: {type(score)})")
-            complexity_level = "LOW"
-            estimated_tables = "1-2"
-            estimated_joins = "0-1"
-        
-        # Detailed analysis with optimized pattern checking
-        analysis = {
-            "complexity_score": score,
-            "complexity_level": complexity_level,
-            "matched_patterns": matched_patterns[:5],  # Top 5 patterns
-            "word_count": word_count,
-            "estimated_tables_needed": estimated_tables,
-            "estimated_joins_needed": estimated_joins,
-            "requires_aggregation": any('aggregation' in pattern for pattern in matched_patterns),
-            "requires_time_analysis": any('temporal' in pattern for pattern in matched_patterns),
-            "requires_ranking": any('analytical' in pattern for pattern in matched_patterns),
-            "requires_multi_step": any('multi_step' in pattern for pattern in matched_patterns)
-        }
-        
-        return analysis
+            
+            # Enhanced analysis with performance metrics
+            analysis_time = time.time() - analysis_start_time
+            self.monitoring_service.record_metric("sql_generator_complexity_analysis_total_time", analysis_time * 1000)
+            
+            analysis = {
+                "complexity_score": score,
+                "complexity_level": complexity_level,
+                "matched_patterns": matched_patterns[:5],  # Top 5 patterns
+                "word_count": word_count,
+                "estimated_tables_needed": estimated_tables,
+                "estimated_joins_needed": estimated_joins,
+                "requires_aggregation": any('aggregation' in pattern for pattern in matched_patterns),
+                "requires_time_analysis": any('temporal' in pattern for pattern in matched_patterns),
+                "requires_ranking": any('analytical' in pattern for pattern in matched_patterns),
+                "requires_multi_step": any('multi_step' in pattern for pattern in matched_patterns),
+                "analysis_performance": {
+                    "total_analysis_time_ms": round(analysis_time * 1000, 2),
+                    "pattern_matching_time_ms": round(pattern_matching_time * 1000, 2),
+                    "patterns_matched": len(matched_patterns)
+                }
+            }
+            
+            return analysis
+            
+        except Exception as e:
+            # Fallback analysis on error
+            analysis_time = time.time() - analysis_start_time
+            print(f"⚠️ Complexity analysis error: {e}, using basic analysis")
+            
+            return {
+                "complexity_score": 0.5,  # Medium complexity as fallback
+                "complexity_level": "MEDIUM",
+                "matched_patterns": [],
+                "word_count": len(question.split()) if question else 0,
+                "estimated_tables_needed": "2-3",
+                "estimated_joins_needed": "1-2",
+                "requires_aggregation": False,
+                "requires_time_analysis": False,
+                "requires_ranking": False,
+                "requires_multi_step": False,
+                "analysis_performance": {
+                    "total_analysis_time_ms": round(analysis_time * 1000, 2),
+                    "error": str(e)
+                }
+            }
     
     def _select_template_by_complexity(self, complexity_score: float, question: str = "") -> str:
         """
