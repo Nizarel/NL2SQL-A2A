@@ -46,7 +46,7 @@ class NL2SQLMultiAgentSystem:
         # Initialize components
         self.kernel = None
         self.mcp_plugin = None
-        self.core_plugins = None
+        # self.core_plugins = None
         self.schema_service = None
         self.cosmos_service = None
         self.memory_service = None
@@ -88,14 +88,14 @@ class NL2SQLMultiAgentSystem:
             # Add MCP plugin to kernel
             self.kernel.add_plugin(self.mcp_plugin, plugin_name="database")
             
-            # Add core plugins
-            self.kernel.add_plugin(TimePlugin(), plugin_name="time")
-            self.kernel.add_plugin(MathPlugin(), plugin_name="math")
+            # # Add core plugins
+            # self.kernel.add_plugin(TimePlugin(), plugin_name="time")
+            # self.kernel.add_plugin(MathPlugin(), plugin_name="math")
             
-            # Initialize Core Plugins Wrapper
+            # # Initialize Core Plugins Wrapper
 
-            self.core_plugins = CorePluginsWrapper(self.kernel)
-            print("✅ Core plugins wrapper initialized!")
+            # self.core_plugins = CorePluginsWrapper(self.kernel)
+            # print("✅ Core plugins wrapper initialized!")
             
 
             
