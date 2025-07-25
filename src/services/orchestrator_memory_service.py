@@ -58,6 +58,20 @@ class SimilarQuery(BaseModel):
     timestamp: datetime
 
 
+class SessionState(BaseModel):
+    """Enhanced session state for maintaining context."""
+    session_id: str
+    user_id: str
+    current_topic: Optional[str] = None
+    active_filters: Dict[str, Any] = Field(default_factory=dict)
+    preferred_tables: List[str] = Field(default_factory=list)
+    conversation_style: str = "professional"  # professional, casual, technical
+    last_query_type: Optional[str] = None
+    context_variables: Dict[str, Any] = Field(default_factory=dict)
+    recent_topics: List[str] = Field(default_factory=list)
+    query_patterns: List[str] = Field(default_factory=list)
+
+
 class OrchestratorMemoryService:
     """
     Enhanced orchestrator memory service with conversation logging and intelligent caching.
@@ -141,6 +155,118 @@ class OrchestratorMemoryService:
             user_id, session_id, max_messages
         )
     
+    async def get_conversation_context_with_summary(
+        self, 
+        user_id: str, 
+        session_id: str, 
+        max_context_window: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Get conversation context with automatic summarization of older messages.
+        Enhanced context management for better conversation flow.
+        """
+        try:
+            # Get recent messages
+            recent_messages = await self.get_session_context(user_id, session_id, max_context_window)
+            
+            # Get all messages for summary
+            all_messages = await self.cosmos_service.get_session_messages_async(user_id, session_id)
+            
+            if len(all_messages) > max_context_window:
+                # Summarize older messages
+                older_messages = all_messages[:-max_context_window]
+                summary = await self._summarize_conversation_history(older_messages)
+                
+                return {
+                    "context_messages": recent_messages,
+                    "conversation_summary": summary,
+                    "total_turns": len(all_messages),
+                    "session_start": all_messages[0].timestamp if all_messages else None,
+                    "has_history": True
+                }
+            
+            return {
+                "context_messages": recent_messages,
+                "conversation_summary": None,
+                "total_turns": len(all_messages),
+                "session_start": all_messages[0].timestamp if all_messages else None,
+                "has_history": len(all_messages) > 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation context: {str(e)}")
+            return {
+                "context_messages": [], 
+                "conversation_summary": None, 
+                "total_turns": 0,
+                "session_start": None,
+                "has_history": False,
+                "error": str(e)
+            }
+
+    async def _summarize_conversation_history(self, messages: List[Message]) -> str:
+        """Summarize older conversation history for context."""
+        try:
+            # Extract key topics from user queries
+            user_queries = []
+            query_topics = []
+            
+            for msg in messages:
+                if msg.role == "user":
+                    user_queries.append(msg.content)
+                    topics = self._extract_topics_from_query(msg.content)
+                    query_topics.extend(topics)
+            
+            # Group similar topics
+            unique_topics = list(set(query_topics))
+            
+            # Create a summary based on query patterns
+            if len(user_queries) > 0:
+                if len(unique_topics) > 0:
+                    return f"Previous discussion covered: {', '.join(unique_topics[:5])}. Total queries: {len(user_queries)}"
+                else:
+                    return f"Previous conversation included {len(user_queries)} queries about data analysis"
+            
+            return "No previous conversation history"
+            
+        except Exception as e:
+            logger.warning(f"Error summarizing conversation history: {str(e)}")
+            return "Previous conversation history available but couldn't be summarized"
+
+    def _extract_topics_from_query(self, query: str) -> List[str]:
+        """Extract key topics from a user query."""
+        try:
+            query_lower = query.lower()
+            topics = []
+            
+            # Business domain topics
+            business_keywords = {
+                "sales": ["sales", "revenue", "income", "profit", "selling"],
+                "customers": ["customer", "client", "buyer", "consumer"],
+                "products": ["product", "item", "inventory", "catalog"],
+                "financials": ["financial", "cost", "expense", "budget"],
+                "analytics": ["trend", "analysis", "compare", "average", "total"]
+            }
+            
+            for topic, keywords in business_keywords.items():
+                if any(keyword in query_lower for keyword in keywords):
+                    topics.append(topic)
+            
+            # Time-based queries
+            time_keywords = ["time", "date", "year", "month", "daily", "weekly", "monthly"]
+            if any(keyword in query_lower for keyword in time_keywords):
+                topics.append("time-series")
+            
+            # Comparison queries
+            comparison_keywords = ["compare", "vs", "versus", "difference", "between"]
+            if any(keyword in query_lower for keyword in comparison_keywords):
+                topics.append("comparison")
+                
+            return topics if topics else ["general"]
+            
+        except Exception:
+            return ["general"]
+    
     # Query Processing and History
     async def process_query(
         self, 
@@ -191,6 +317,366 @@ class OrchestratorMemoryService:
         
         logger.info(f"Processed query for user {user_id} in session {session_id}")
         return query_context
+    
+    async def detect_follow_up_query(self, question: str, context_messages: List[Message]) -> Dict[str, Any]:
+        """
+        Detect if the current question is a follow-up to previous queries.
+        Enhanced to handle conversational context and references.
+        """
+        try:
+            follow_up_indicators = [
+                "that", "those", "it", "them", "the same", "also", "another",
+                "more", "what about", "how about", "and", "in addition",
+                "similarly", "likewise", "too", "as well", "furthermore",
+                "moreover", "additionally", "plus", "again"
+            ]
+            
+            question_lower = question.lower()
+            is_follow_up = any(indicator in question_lower for indicator in follow_up_indicators)
+            
+            # Enhanced detection - check for pronouns and relative references
+            pronoun_indicators = ["this", "these", "here", "there", "such"]
+            has_pronouns = any(pronoun in question_lower for pronoun in pronoun_indicators)
+            
+            # Check for incomplete context (questions that seem to reference previous context)
+            incomplete_indicators = ["show me more", "tell me about", "explain", "why", "how about"]
+            seems_incomplete = any(indicator in question_lower for indicator in incomplete_indicators) and len(question.split()) < 8
+            
+            # Final determination
+            is_follow_up = is_follow_up or has_pronouns or seems_incomplete
+            
+            # Extract context from previous queries if follow-up detected
+            context_elements = []
+            enhanced_question = question
+            
+            if is_follow_up and context_messages:
+                # Look at last 3 conversation turns for context
+                recent_context = []
+                for msg in reversed(context_messages[-6:]):  # Last 6 messages (3 turns)
+                    if msg.role == "user":
+                        recent_context.append(f"Previous query: {msg.content}")
+                    elif msg.role == "assistant" and msg.metadata:
+                        if "sql_query" in msg.metadata:
+                            recent_context.append(f"Previous SQL: {msg.metadata['sql_query']}")
+                    
+                    # Limit context to avoid overwhelming the query
+                    if len(recent_context) >= 3:
+                        break
+                
+                context_elements = recent_context
+                
+                # Enhance the question with context if it's clearly a follow-up
+                if len(context_elements) > 0:
+                    enhanced_question = self._enhance_follow_up_question(question, context_elements)
+            
+            return {
+                "is_follow_up": is_follow_up,
+                "context_elements": context_elements,
+                "enhanced_question": enhanced_question,
+                "confidence": "high" if (is_follow_up and len(context_elements) > 0) else "medium",
+                "reasoning": self._get_follow_up_reasoning(is_follow_up, has_pronouns, seems_incomplete)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error detecting follow-up query: {str(e)}")
+            return {
+                "is_follow_up": False,
+                "context_elements": [],
+                "enhanced_question": question,
+                "confidence": "low",
+                "reasoning": "Error in detection"
+            }
+
+    def _enhance_follow_up_question(self, question: str, context_elements: List[str]) -> str:
+        """Enhance follow-up question with context."""
+        try:
+            if not context_elements:
+                return question
+            
+            # Use only the most recent context to avoid overwhelming the query
+            recent_context = context_elements[:2]  # Take the 2 most recent context elements
+            
+            # Create context string
+            context_str = "; ".join(recent_context)
+            
+            # Different enhancement strategies based on question type
+            question_lower = question.lower()
+            
+            if question_lower.startswith(("show", "get", "find")):
+                # Direct request - append context
+                return f"{question} (Building on: {context_str})"
+            elif question_lower.startswith(("what about", "how about")):
+                # Comparison question - replace "what about" with more specific language
+                return f"{question} (In context of: {context_str})"
+            else:
+                # General follow-up - prepend context
+                return f"Continuing from previous queries ({context_str}): {question}"
+                
+        except Exception as e:
+            logger.warning(f"Error enhancing follow-up question: {str(e)}")
+            return question
+
+    def _get_follow_up_reasoning(self, is_follow_up: bool, has_pronouns: bool, seems_incomplete: bool) -> str:
+        """Get reasoning for follow-up detection."""
+        reasons = []
+        if is_follow_up:
+            reasons.append("contains follow-up indicators")
+        if has_pronouns:
+            reasons.append("contains pronouns/references")
+        if seems_incomplete:
+            reasons.append("appears to reference previous context")
+        
+        if reasons:
+            return f"Detected as follow-up: {', '.join(reasons)}"
+        else:
+            return "Independent query - no follow-up indicators detected"
+    
+    # ======================================
+    # Contextual Suggestions and Session State
+    # ======================================
+    
+    async def generate_contextual_suggestions(
+        self, 
+        user_id: str, 
+        current_query: str,
+        session_context: List[Message],
+        limit: int = 5
+    ) -> List[str]:
+        """
+        Generate intelligent query suggestions based on conversation history.
+        """
+        try:
+            suggestions = []
+            
+            # Analyze current query type
+            query_type = self._categorize_query(current_query)
+            
+            # Get user's historical patterns
+            user_patterns = await self._analyze_user_query_patterns(user_id)
+            
+            # Generate suggestions based on query type and patterns
+            type_suggestions = self._get_query_type_suggestions(query_type, user_patterns)
+            suggestions.extend(type_suggestions)
+            
+            # Context-based suggestions from recent conversation
+            recent_topics = self._extract_recent_topics(session_context)
+            context_suggestions = self._get_context_based_suggestions(recent_topics, current_query)
+            suggestions.extend(context_suggestions)
+            
+            # Pattern-based suggestions
+            pattern_suggestions = self._get_pattern_based_suggestions(user_patterns, current_query)
+            suggestions.extend(pattern_suggestions)
+            
+            # Remove duplicates and limit results
+            unique_suggestions = list(dict.fromkeys(suggestions))  # Preserves order
+            return unique_suggestions[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error generating contextual suggestions: {str(e)}")
+            return [
+                "What are our top selling products?",
+                "Show me customer trends this month",
+                "Compare sales by region"
+            ]  # Fallback suggestions
+
+    async def _analyze_user_query_patterns(self, user_id: str) -> Dict[str, Any]:
+        """Analyze user's historical query patterns."""
+        try:
+            patterns = {
+                "query_types": [],
+                "common_topics": [],
+                "complexity_preference": "medium",
+                "time_focus": False,
+                "comparison_focus": False
+            }
+            
+            # Get recent conversation history
+            history = await self.get_user_conversation_history(user_id, limit=20)
+            
+            for conv in history:
+                if conv.user_input:
+                    query_lower = conv.user_input.lower()
+                    
+                    # Track query types
+                    query_type = self._categorize_query(conv.user_input)
+                    patterns["query_types"].append(query_type)
+                    
+                    # Track topics
+                    topics = self._extract_topics_from_query(conv.user_input)
+                    patterns["common_topics"].extend(topics)
+                    
+                    # Track patterns
+                    if any(word in query_lower for word in ["time", "date", "trend", "over"]):
+                        patterns["time_focus"] = True
+                    if any(word in query_lower for word in ["compare", "vs", "versus", "difference"]):
+                        patterns["comparison_focus"] = True
+            
+            # Deduplicate and get most common
+            patterns["query_types"] = list(set(patterns["query_types"]))
+            patterns["common_topics"] = list(set(patterns["common_topics"]))
+            
+            return patterns
+            
+        except Exception as e:
+            logger.warning(f"Error analyzing user patterns: {str(e)}")
+            return {"query_types": [], "common_topics": [], "complexity_preference": "medium"}
+
+    def _get_query_type_suggestions(self, query_type: str, user_patterns: Dict[str, Any]) -> List[str]:
+        """Generate suggestions based on query type and user patterns."""
+        suggestions = []
+        
+        type_suggestions = {
+            "sales_analytics": [
+                "What were our sales trends last month?",
+                "Show me top performing products by revenue",
+                "Compare sales across different regions"
+            ],
+            "customer_analytics": [
+                "Who are our most valuable customers?",
+                "What's our customer retention rate?",
+                "Show me customer demographic breakdown"
+            ],
+            "product_analytics": [
+                "Which products have the highest margins?",
+                "What's our inventory turnover rate?",
+                "Show me product performance by category"
+            ],
+            "financial_analytics": [
+                "What's our profit margin this quarter?",
+                "Show me cost breakdown by department",
+                "What's our ROI on marketing spend?"
+            ]
+        }
+        
+        # Add suggestions for current query type
+        if query_type in type_suggestions:
+            suggestions.extend(type_suggestions[query_type][:2])
+        
+        # Add suggestions based on user patterns
+        if not user_patterns.get("time_focus", False):
+            suggestions.append("Show me trends over time")
+        if not user_patterns.get("comparison_focus", False):
+            suggestions.append("Compare different segments")
+            
+        return suggestions
+
+    def _get_context_based_suggestions(self, recent_topics: List[str], current_query: str) -> List[str]:
+        """Generate suggestions based on recent conversation topics."""
+        suggestions = []
+        
+        # Topic-based follow-up suggestions
+        topic_followups = {
+            "sales": [
+                "What about sales by customer segment?",
+                "Show me sales forecasts",
+                "How do our sales compare to last year?"
+            ],
+            "customers": [
+                "What's the customer acquisition cost?",
+                "Show me customer lifetime value",
+                "Which customers are at risk of churning?"
+            ],
+            "products": [
+                "What's our product margin analysis?",
+                "Show me product bundling opportunities",
+                "Which products need restocking?"
+            ]
+        }
+        
+        for topic in recent_topics:
+            if topic in topic_followups:
+                suggestions.extend(topic_followups[topic][:1])  # One suggestion per topic
+        
+        return suggestions
+
+    def _get_pattern_based_suggestions(self, user_patterns: Dict[str, Any], current_query: str) -> List[str]:
+        """Generate suggestions based on user behavior patterns."""
+        suggestions = []
+        
+        # Suggest unexplored areas
+        common_types = user_patterns.get("query_types", [])
+        all_types = ["sales_analytics", "customer_analytics", "product_analytics", "financial_analytics"]
+        
+        unexplored = [t for t in all_types if t not in common_types]
+        
+        exploration_suggestions = {
+            "sales_analytics": "Explore sales performance metrics",
+            "customer_analytics": "Analyze customer behavior patterns",
+            "product_analytics": "Review product performance data",
+            "financial_analytics": "Examine financial KPIs"
+        }
+        
+        for unexplored_type in unexplored[:1]:  # Suggest one unexplored area
+            if unexplored_type in exploration_suggestions:
+                suggestions.append(exploration_suggestions[unexplored_type])
+        
+        return suggestions
+
+    def _extract_recent_topics(self, session_context: List[Message]) -> List[str]:
+        """Extract topics from recent conversation."""
+        topics = []
+        
+        for msg in session_context[-5:]:  # Last 5 messages
+            if msg.role == "user":
+                msg_topics = self._extract_topics_from_query(msg.content)
+                topics.extend(msg_topics)
+        
+        return list(set(topics))  # Deduplicate
+
+    async def update_session_state(
+        self, 
+        session_id: str, 
+        user_id: str,
+        updates: Dict[str, Any]
+    ) -> SessionState:
+        """Update and persist session state."""
+        try:
+            # Get current state
+            cache_key = f"session_state_{session_id}"
+            current_state = await self.cosmos_service.get_cache_item_async(cache_key)
+            
+            if current_state and current_state.metadata:
+                state = SessionState(**current_state.metadata)
+            else:
+                state = SessionState(session_id=session_id, user_id=user_id)
+            
+            # Apply updates
+            for key, value in updates.items():
+                if hasattr(state, key):
+                    setattr(state, key, value)
+            
+            # Persist state
+            await self.cosmos_service.set_cache_item_async(
+                CacheItem(
+                    key=cache_key,
+                    value=f"session_state_{session_id}",
+                    metadata=state.model_dump(),
+                    expires_at=datetime.now(timezone.utc).replace(hour=23, minute=59, second=59)  # Expire at end of day
+                )
+            )
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error updating session state: {str(e)}")
+            # Return default state on error
+            return SessionState(session_id=session_id, user_id=user_id)
+
+    async def get_session_state(self, session_id: str, user_id: str) -> SessionState:
+        """Get current session state."""
+        try:
+            cache_key = f"session_state_{session_id}"
+            state_item = await self.cosmos_service.get_cache_item_async(cache_key)
+            
+            if state_item and state_item.metadata:
+                return SessionState(**state_item.metadata)
+            else:
+                # Create new session state
+                return SessionState(session_id=session_id, user_id=user_id)
+                
+        except Exception as e:
+            logger.error(f"Error getting session state: {str(e)}")
+            return SessionState(session_id=session_id, user_id=user_id)
     
     async def store_query_result(
         self, 

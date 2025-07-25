@@ -190,6 +190,33 @@ WHAT YOU MUST NOT DO:
                         session_id=session_id
                     )
                     print(f"📝 Started workflow session: {workflow_context.workflow_id}")
+                    
+                    # Enhanced: Get conversation context and detect follow-ups
+                    conversation_context = await self.memory_service.get_conversation_context_with_summary(
+                        user_id=user_id,
+                        session_id=session_id,
+                        max_context_window=10
+                    )
+                    
+                    # Enhanced: Detect follow-up queries
+                    follow_up_info = await self.memory_service.detect_follow_up_query(
+                        question=question,
+                        context_messages=conversation_context.get("context_messages", [])
+                    )
+                    
+                    # Enhanced: Update input data with conversation context
+                    input_data["conversation_context"] = conversation_context
+                    input_data["follow_up_info"] = follow_up_info
+                    
+                    # If it's a follow-up, use the enhanced question
+                    if follow_up_info.get("is_follow_up") and follow_up_info.get("enhanced_question"):
+                        enhanced_question = follow_up_info["enhanced_question"]
+                        print(f"🔄 Follow-up detected: {follow_up_info.get('reasoning', 'Unknown')}")
+                        print(f"🔄 Enhanced question: {enhanced_question[:100]}...")
+                        # Update the question for processing but keep original for logging
+                        input_data["enhanced_question"] = enhanced_question
+                        input_data["original_question"] = question
+                    
                 except Exception as e:
                     print(f"⚠️ Failed to start workflow session: {e}")
                     workflow_context = None
@@ -220,6 +247,18 @@ WHAT YOU MUST NOT DO:
             # Complete workflow session with conversation logging
             if self.memory_service and enable_conversation_logging and workflow_context and result.get("success"):
                 try:
+                    # Enhanced: Generate contextual suggestions before completing workflow
+                    conversation_context = input_data.get("conversation_context", {})
+                    if conversation_context.get("context_messages"):
+                        suggestions = await self.memory_service.generate_contextual_suggestions(
+                            user_id=user_id,
+                            current_query=question,
+                            session_context=conversation_context["context_messages"],
+                            limit=5
+                        )
+                        result["data"]["suggestions"] = suggestions
+                        result["data"]["conversation_turn"] = conversation_context.get("total_turns", 0) + 1
+                    
                     conversation_log = await self._complete_workflow_with_logging(
                         workflow_context=workflow_context,
                         result=result,
@@ -343,10 +382,18 @@ Each agent should complete their step and pass results to the next agent.
         }
         
         try:
-            # Step 0: Schema Analysis - NEW STEP for optimized context
+            # Enhanced: Use enhanced question if available (for follow-ups)
+            processing_question = params.get("enhanced_question", params["question"])
+            original_question = params.get("original_question", params["question"])
+            
+            print(f"🔍 Processing question: {processing_question[:100]}...")
+            if processing_question != original_question:
+                print(f"🔄 Original question: {original_question[:100]}...")
+            
+            # Step 0: Schema Analysis with enhanced question
             print("🔍 Step 0/4: Analyzing schema context...")
             schema_analysis = await self.schema_analyst.process({
-                "question": params["question"],
+                "question": processing_question,  # Use enhanced question for analysis
                 "context": params.get("context", ""),
                 "use_cache": True,
                 "similarity_threshold": 0.85
@@ -383,7 +430,7 @@ Each agent should complete their step and pass results to the next agent.
             # Step 1: SQL Generation with optimized context
             print("🧠 Step 1/4: Generating SQL query with optimized schema context...")
             sql_result = await self.sql_generator.process({
-                "question": params["question"],
+                "question": processing_question,  # Use enhanced question for SQL generation
                 "context": params.get("context", ""),
                 "optimized_schema_context": optimized_schema_context,  # NEW: Pass optimized context
                 "schema_analysis": schema_analysis["data"] if schema_analysis["success"] else None
@@ -440,7 +487,7 @@ Each agent should complete their step and pass results to the next agent.
                     "raw_results": execution_result["data"]["raw_results"],
                     "formatted_results": execution_result["data"]["formatted_results"],
                     "sql_query": generated_sql,
-                    "question": params["question"],
+                    "question": original_question,  # Use original question for user-facing summary
                     "metadata": execution_result["metadata"],
                     "schema_analysis": schema_analysis["data"] if schema_analysis["success"] else None  # NEW: Pass analysis context
                 })
