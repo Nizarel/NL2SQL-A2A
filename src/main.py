@@ -1,6 +1,6 @@
 """
 NL2SQL Multi-Agent System - Natural Language to SQL Converter
-Main application using Semantic Kernel 1.34.0 with specialized agents
+Main application using Semantic Kernel 1.35.0 with specialized agents
 """
 
 import sys
@@ -11,9 +11,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from semantic_kernel import Kernel
+from semantic_kernel.functions import kernel_function, KernelArguments
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion, AzureTextEmbedding
+from semantic_kernel.core_plugins import TimePlugin, MathPlugin
 
 from plugins.mcp_database_plugin import MCPDatabasePlugin
+from plugins.core_plugins_wrapper import CorePluginsWrapper
 from services.schema_service import SchemaService
 from services.cosmos_db_service import CosmosDbService
 from services.orchestrator_memory_service import OrchestratorMemoryService
@@ -43,6 +46,7 @@ class NL2SQLMultiAgentSystem:
         # Initialize components
         self.kernel = None
         self.mcp_plugin = None
+        self.core_plugins = None
         self.schema_service = None
         self.cosmos_service = None
         self.memory_service = None
@@ -83,6 +87,17 @@ class NL2SQLMultiAgentSystem:
             
             # Add MCP plugin to kernel
             self.kernel.add_plugin(self.mcp_plugin, plugin_name="database")
+            
+            # Add core plugins
+            self.kernel.add_plugin(TimePlugin(), plugin_name="time")
+            self.kernel.add_plugin(MathPlugin(), plugin_name="math")
+            
+            # Initialize Core Plugins Wrapper
+
+            self.core_plugins = CorePluginsWrapper(self.kernel)
+            print("✅ Core plugins wrapper initialized!")
+            
+
             
             # Initialize Schema Service
             self.schema_service = SchemaService(self.mcp_plugin)
@@ -311,6 +326,52 @@ class NL2SQLMultiAgentSystem:
             raise ValueError("Agent not initialized. Call initialize() first.")
         
         return self.schema_service.get_full_schema_summary()
+    
+    # async def get_current_time_info(self) -> dict:
+    #     """
+    #     Get current time information using TimePlugin
+    #     """
+    #     if not self.core_plugins:
+    #         raise ValueError("Core plugins not initialized. Call initialize() first.")
+        
+    #     return {
+    #         "current_time": await self.core_plugins.get_current_time(),
+    #         "date_components": await self.core_plugins.get_date_components(),
+    #         "utc_time": await self.core_plugins.get_utc_time(),
+    #         "timezone_info": await self.core_plugins.get_time_zone_info()
+    #     }
+    
+    # async def calculate_business_metrics(self, base_amount: float) -> dict:
+    #     """
+    #     Calculate time-based business metrics using core plugins
+    #     """
+    #     if not self.core_plugins:
+    #         raise ValueError("Core plugins not initialized. Call initialize() first.")
+        
+    #     return await self.core_plugins.calculate_time_based_metrics(base_amount)
+    
+    # async def perform_calculation(self, operation: str, num1: float, num2: float) -> str:
+    #     """
+    #     Perform mathematical calculations using MathPlugin
+    #     """
+    #     if not self.core_plugins:
+    #         raise ValueError("Core plugins not initialized. Call initialize() first.")
+        
+    #     if operation.lower() == "add":
+    #         return await self.core_plugins.add_numbers(num1, num2)
+    #     elif operation.lower() == "subtract":
+    #         return await self.core_plugins.subtract_numbers(num1, num2)
+    #     else:
+    #         raise ValueError(f"Unsupported operation: {operation}. Use 'add' or 'subtract'")
+    
+    # async def get_core_plugins_status(self) -> dict:
+    #     """
+    #     Get status of TimePlugin and MathPlugin
+    #     """
+    #     if not self.core_plugins:
+    #         raise ValueError("Core plugins not initialized. Call initialize() first.")
+        
+    #     return await self.core_plugins.get_plugin_status()
     
     async def get_workflow_status(self) -> dict:
         """
