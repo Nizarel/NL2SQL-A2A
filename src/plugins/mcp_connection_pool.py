@@ -13,6 +13,14 @@ from contextlib import asynccontextmanager
 from fastmcp import Client
 import os
 
+# Import our enhanced performance monitor
+try:
+    from ..services.performance_monitor_enhanced import performance_monitor
+    PERFORMANCE_INTEGRATION = True
+except ImportError:
+    PERFORMANCE_INTEGRATION = False
+    print("⚠️ Performance monitor not available - using basic metrics only")
+
 
 @dataclass
 class ConnectionMetrics:
@@ -188,22 +196,47 @@ class MCPConnectionPool:
     
     @asynccontextmanager
     async def get_connection(self):
-        """Get a connection from the pool (context manager)"""
+        """Get a connection from the pool (context manager) with enhanced performance tracking"""
+        operation_name = "mcp_connection_borrow"
         start_time = time.time()
         conn = None
         
-        try:
-            conn = await self._borrow_connection()
-            
-            if self._metrics:
-                borrow_time = (time.time() - start_time) * 1000
-                self._metrics.record_borrow_time(borrow_time)
-            
-            yield conn
-            
-        finally:
-            if conn:
-                await self._return_connection(conn)
+        # Use integrated performance monitor if available
+        if PERFORMANCE_INTEGRATION:
+            with performance_monitor.track_operation(
+                operation_name,
+                pool_active=len(self._active_connections),
+                pool_idle=len(self._idle_connections)
+            ) as metric:
+                try:
+                    conn = await self._borrow_connection()
+                    
+                    # Add connection-specific metadata
+                    metric.metadata.update({
+                        "connection_id": conn.connection_id,
+                        "connection_age": time.time() - conn.created_at,
+                        "connection_usage": conn.usage_count
+                    })
+                    
+                    yield conn
+                    
+                finally:
+                    if conn:
+                        await self._return_connection(conn)
+        else:
+            # Fallback to basic tracking
+            try:
+                conn = await self._borrow_connection()
+                
+                if self._metrics:
+                    borrow_time = (time.time() - start_time) * 1000
+                    self._metrics.record_borrow_time(borrow_time)
+                
+                yield conn
+                
+            finally:
+                if conn:
+                    await self._return_connection(conn)
     
     async def _borrow_connection(self) -> PooledConnection:
         """Borrow a connection from the pool"""

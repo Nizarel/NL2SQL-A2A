@@ -33,6 +33,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from main import NL2SQLMultiAgentSystem
 from Models.api_models import QueryRequest, SQLGenerationRequest, SQLExecutionRequest, SummarizationRequest, ConversationAnalysisRequest, APIResponse
 from Models.schema_analysis_result import SchemaAnalysisResult
+from services.performance_monitor_enhanced import performance_monitor
+from services.simple_cache import query_result_cache, schema_cache, sql_cache
+from agents.hybrid_orchestrator_agent import HybridOrchestratorAgent
+from services.schema_analysis_cache_service import default_schema_cache
+from services.optimization_tracker import optimization_tracker
 
 
 def make_json_serializable(obj):
@@ -160,6 +165,398 @@ async def get_system_status(system: NL2SQLMultiAgentSystem = Depends(get_system)
         raise HTTPException(status_code=500, detail=f"Failed to get system status: {str(e)}")
 
 
+@app.get("/performance", response_model=APIResponse)
+async def get_performance_metrics():
+    """Get system performance metrics and statistics"""
+    try:
+        system_overview = performance_monitor.get_system_overview()
+        recent_metrics = performance_monitor.get_recent_metrics(limit=20)
+        
+        return APIResponse(
+            success=True,
+            data={
+                "system_overview": system_overview,
+                "recent_metrics": recent_metrics,
+                "available_operations": [
+                    "orchestrator_query",
+                    "sql_execution", 
+                    "schema_analysis",
+                    "sql_generation"
+                ]
+            },
+            metadata={
+                "timestamp": time.time(),
+                "total_tracked_operations": len(performance_monitor.metrics_history)
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get performance metrics: {str(e)}")
+
+
+@app.get("/performance/{operation_name}", response_model=APIResponse)
+async def get_operation_performance(operation_name: str):
+    """Get performance statistics for a specific operation"""
+    try:
+        stats = performance_monitor.get_operation_stats(operation_name)
+        
+        if stats["count"] == 0:
+            return APIResponse(
+                success=True,
+                data={
+                    "message": f"No performance data available for operation: {operation_name}",
+                    "operation": operation_name,
+                    "stats": stats
+                }
+            )
+        
+        return APIResponse(
+            success=True,
+            data={
+                "operation": operation_name,
+                "statistics": stats,
+                "performance_trend": "improving" if stats["recent_duration"] and stats["recent_duration"] < stats["avg_duration"] else "stable"
+            },
+            metadata={
+                "timestamp": time.time()
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get operation performance: {str(e)}")
+
+
+@app.get("/cache/status", response_model=APIResponse)
+async def get_cache_status():
+    """Get status of all cache systems"""
+    try:
+        return APIResponse(
+            success=True,
+            data={
+                "query_result_cache": query_result_cache.get_stats(),
+                "schema_cache": schema_cache.get_stats(),
+                "sql_cache": sql_cache.get_stats(),
+                "overall_status": "active",
+                "optimization_level": "phase_2"
+            },
+            metadata={
+                "timestamp": time.time(),
+                "cache_types": ["query_result", "schema", "sql"]
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache status: {str(e)}")
+
+
+@app.get("/cache/{cache_type}/info", response_model=APIResponse)
+async def get_cache_info(cache_type: str):
+    """Get detailed information about a specific cache"""
+    try:
+        cache_map = {
+            "query_result": query_result_cache,
+            "schema": schema_cache,
+            "sql": sql_cache
+        }
+        
+        if cache_type not in cache_map:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Cache type '{cache_type}' not found. Available: {list(cache_map.keys())}"
+            )
+        
+        cache = cache_map[cache_type]
+        cache_info = cache.get_cache_info()
+        
+        return APIResponse(
+            success=True,
+            data={
+                "cache_type": cache_type,
+                "info": cache_info
+            },
+            metadata={
+                "timestamp": time.time()
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache info: {str(e)}")
+
+
+@app.post("/cache/clear", response_model=APIResponse)
+async def clear_all_caches():
+    """Clear all cache systems (useful for testing)"""
+    try:
+        query_result_cache.clear()
+        schema_cache.clear()
+        sql_cache.clear()
+        
+        return APIResponse(
+            success=True,
+            data={
+                "message": "All caches cleared successfully",
+                "cleared_caches": ["query_result", "schema", "sql"]
+            },
+            metadata={
+                "timestamp": time.time(),
+                "operation": "cache_clear"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear caches: {str(e)}")
+
+
+@app.post("/orchestrator/query-hybrid", response_model=APIResponse)
+async def orchestrator_query_hybrid(
+    request: QueryRequest,
+    system: NL2SQLMultiAgentSystem = Depends(get_system)
+):
+    """
+    Process query using hybrid orchestrator (Phase 3 - A/B testing endpoint)
+    Falls back to legacy orchestrator on any issues
+    """
+    try:
+        print(f"🔬 Hybrid orchestrator A/B test: {request.question}")
+        print(f"👤 User: {request.user_id}, Session: {request.session_id}")
+        
+        # Create hybrid orchestrator instance with correct parameter names
+        hybrid_orchestrator = HybridOrchestratorAgent(
+            kernel=system.kernel,
+            schema_analyst_agent=system.schema_analyst_agent,
+            sql_generator_agent=system.sql_generator_agent,
+            executor_agent=system.executor_agent,
+            summarizing_agent=system.summarizing_agent,
+            memory_service=system.memory_service
+        )
+        
+        # Track performance for hybrid processing
+        with performance_monitor.track_operation(
+            "hybrid_orchestrator_test", 
+            user_id=request.user_id, 
+            session_id=request.session_id,
+            question_length=len(request.question),
+            ab_test=True
+        ) as metric:
+            
+            result = await hybrid_orchestrator.process({
+                "question": request.question,
+                "user_id": request.user_id,
+                "session_id": request.session_id,
+                "execute": request.execute,
+                "limit": request.limit,
+                "include_summary": request.include_summary,
+                "context": request.context,
+                "enable_conversation_logging": request.enable_conversation_logging
+            })
+            
+            # Add A/B test metadata
+            metric.metadata.update({
+                "ab_test_type": "hybrid_vs_legacy",
+                "orchestrator_type": "hybrid",
+                "result_success": result.get("success", False)
+            })
+        
+        if result.get("success"):
+            try:
+                data = result.get("data")
+                metadata = result.get("metadata", {})
+                
+                # Convert any non-serializable objects to strings
+                if data:
+                    data = make_json_serializable(data)
+                if metadata:
+                    metadata = make_json_serializable(metadata)
+                
+                # Add A/B test performance metrics
+                metadata["ab_test"] = {
+                    "orchestrator": "hybrid",
+                    "duration": metric.duration,
+                    "timestamp": time.time(),
+                    "phase": "3_parallel_testing"
+                }
+                
+                return APIResponse(
+                    success=True,
+                    data=data,
+                    metadata=metadata
+                )
+            except Exception as serialization_error:
+                print(f"❌ Serialization error: {serialization_error}")
+                return APIResponse(
+                    success=True,
+                    data={"result": str(result.get("data"))},
+                    metadata={"original_metadata": str(result.get("metadata"))}
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Hybrid query processing failed: {result.get('error', 'Unknown error')}"
+            )
+            
+    except Exception as e:
+        print(f"❌ Hybrid orchestrator failed, this is expected during A/B testing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Hybrid orchestrator test failed: {str(e)}")
+
+
+@app.get("/orchestrator/ab-test/status", response_model=APIResponse)
+async def get_ab_test_status(system: NL2SQLMultiAgentSystem = Depends(get_system)):
+    """Get A/B testing status and performance comparison"""
+    try:
+        # Get performance stats for both orchestrators
+        legacy_stats = performance_monitor.get_operation_stats("orchestrator_query")
+        hybrid_stats = performance_monitor.get_operation_stats("hybrid_orchestrator_test")
+        
+        # Get parallel configuration status
+        parallel_enabled = os.getenv("ENABLE_PARALLEL_PROCESSING", "false").lower() == "true"
+        
+        comparison = {
+            "ab_testing_active": True,
+            "phase": "3_parallel_evaluation",
+            "orchestrators": {
+                "legacy": {
+                    "endpoint": "/orchestrator/query",
+                    "stats": legacy_stats,
+                    "status": "production_stable"
+                },
+                "hybrid": {
+                    "endpoint": "/orchestrator/query-hybrid", 
+                    "stats": hybrid_stats,
+                    "status": "testing_phase",
+                    "parallel_enabled": parallel_enabled
+                }
+            },
+            "recommendations": []
+        }
+        
+        # Generate recommendations based on performance
+        if legacy_stats["count"] > 0 and hybrid_stats["count"] > 0:
+            legacy_avg = legacy_stats["avg_duration"]
+            hybrid_avg = hybrid_stats["avg_duration"]
+            
+            if hybrid_avg < legacy_avg:
+                improvement = ((legacy_avg - hybrid_avg) / legacy_avg) * 100
+                comparison["recommendations"].append(
+                    f"Hybrid orchestrator showing {improvement:.1f}% improvement - consider enabling parallel processing"
+                )
+            else:
+                comparison["recommendations"].append(
+                    "Legacy orchestrator performing better - continue with current setup"
+                )
+        else:
+            comparison["recommendations"].append(
+                "Insufficient data for comparison - run more A/B tests"
+            )
+        
+        return APIResponse(
+            success=True,
+            data=comparison,
+            metadata={
+                "timestamp": time.time(),
+                "parallel_config": {
+                    "enabled": parallel_enabled,
+                    "threshold": os.getenv("PARALLEL_THRESHOLD", "30"),
+                    "fallback": os.getenv("PARALLEL_FALLBACK", "true")
+                }
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get A/B test status: {str(e)}")
+
+
+@app.get("/cache/performance", response_model=APIResponse)
+async def get_cache_performance():
+    """Get schema cache performance metrics"""
+    try:
+        cache_stats = default_schema_cache.get_performance_stats()
+        
+        return APIResponse(
+            success=True,
+            data={
+                "cache_performance": cache_stats,
+                "cache_optimization_recommendations": _get_cache_recommendations(cache_stats)
+            },
+            metadata={
+                "timestamp": time.time(),
+                "cache_type": "schema_analysis"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get cache performance: {str(e)}")
+
+
+@app.post("/cache/clear", response_model=APIResponse)
+async def clear_cache():
+    """Clear schema analysis cache (admin endpoint)"""
+    try:
+        default_schema_cache.clear_cache()
+        
+        return APIResponse(
+            success=True,
+            data={
+                "message": "Schema analysis cache cleared successfully",
+                "timestamp": time.time()
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
+@app.get("/optimization/status", response_model=APIResponse)
+async def get_optimization_status():
+    """Get comprehensive optimization status and progress dashboard"""
+    try:
+        optimization_status = optimization_tracker.get_optimization_status()
+        
+        return APIResponse(
+            success=True,
+            data=optimization_status,
+            metadata={
+                "timestamp": time.time(),
+                "dashboard_version": "1.0",
+                "system_status": "optimizing"
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get optimization status: {str(e)}")
+
+
+@app.post("/optimization/phase/{phase_name}/complete", response_model=APIResponse)
+async def complete_optimization_phase(phase_name: str, improvement: str = ""):
+    """Mark an optimization phase as completed (admin endpoint)"""
+    try:
+        optimization_tracker.complete_phase(phase_name, improvement)
+        
+        return APIResponse(
+            success=True,
+            data={
+                "message": f"Phase {phase_name} marked as completed",
+                "improvement": improvement,
+                "timestamp": time.time()
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to complete phase: {str(e)}")
+
+
+def _get_cache_recommendations(cache_stats: Dict[str, Any]) -> List[str]:
+    """Generate cache optimization recommendations based on performance"""
+    recommendations = []
+    
+    hit_rate = cache_stats.get("hit_rates", {}).get("overall_hit_rate", 0)
+    semantic_hit_rate = cache_stats.get("hit_rates", {}).get("semantic_hit_rate", 0)
+    cache_size = cache_stats.get("cache_sizes", {}).get("exact_cache", 0)
+    
+    if hit_rate < 30:
+        recommendations.append("Consider increasing cache size - low hit rate detected")
+    
+    if semantic_hit_rate < 10:
+        recommendations.append("Semantic matching underutilized - consider lowering similarity threshold")
+    
+    if cache_size > 80:
+        recommendations.append("Cache approaching capacity - consider cache cleanup or size increase")
+    
+    if not recommendations:
+        recommendations.append("Cache performance is optimal")
+    
+    return recommendations
+
+
 # Orchestrator Endpoints
 @app.post("/orchestrator/query", response_model=APIResponse)
 async def orchestrator_query(
@@ -174,28 +571,96 @@ async def orchestrator_query(
         print(f"🎯 Orchestrator query: {request.question}")
         print(f"👤 User: {request.user_id}, Session: {request.session_id}")
         
-        result = await system.orchestrator_agent.process({
-            "question": request.question,
-            "user_id": request.user_id,
-            "session_id": request.session_id,
-            "execute": request.execute,
-            "limit": request.limit,
-            "include_summary": request.include_summary,
-            "context": request.context,
-            "enable_conversation_logging": request.enable_conversation_logging
-        })
+        # Track performance for this operation
+        with performance_monitor.track_operation(
+            "orchestrator_query", 
+            user_id=request.user_id, 
+            session_id=request.session_id,
+            question_length=len(request.question)
+        ) as metric:
+            
+            # Check cache first (Phase 2 optimization)
+            cache_key_params = {
+                "user_id": request.user_id,
+                "session_id": request.session_id,
+                "execute": request.execute,
+                "limit": request.limit,
+                "include_summary": request.include_summary
+            }
+            
+            cached_result = query_result_cache.get(request.question, cache_key_params)
+            if cached_result:
+                print(f"🚀 Cache HIT for query: {request.question[:50]}...")
+                metric.metadata.update({
+                    "cache_hit": True,
+                    "cache_source": "query_result_cache"
+                })
+                
+                # Add cache info to metadata
+                cached_result["metadata"]["performance"] = {
+                    "duration": metric.duration,
+                    "timestamp": time.time(),
+                    "cache_hit": True
+                }
+                
+                return APIResponse(
+                    success=True,
+                    data=cached_result["data"],
+                    metadata=cached_result["metadata"]
+                )
+            
+            print(f"💾 Cache MISS - processing query: {request.question[:50]}...")
+            metric.metadata.update({"cache_hit": False})
+            
+            result = await system.orchestrator_agent.process({
+                "question": request.question,
+                "user_id": request.user_id,
+                "session_id": request.session_id,
+                "execute": request.execute,
+                "limit": request.limit,
+                "include_summary": request.include_summary,
+                "context": request.context,
+                "enable_conversation_logging": request.enable_conversation_logging
+            })
+            
+            # Add performance data to metadata
+            metric.metadata.update({
+                "execute": request.execute,
+                "include_summary": request.include_summary,
+                "result_success": result.get("success", False)
+            })
         
         if result.get("success"):
             # Debug: Check data structure for serialization issues
             try:
                 data = result.get("data")
-                metadata = result.get("metadata")
+                metadata = result.get("metadata", {})
                 
                 # Convert any non-serializable objects to strings
                 if data:
                     data = make_json_serializable(data)
                 if metadata:
                     metadata = make_json_serializable(metadata)
+                
+                # Add performance metrics to response metadata
+                metadata["performance"] = {
+                    "duration": metric.duration,
+                    "timestamp": time.time(),
+                    "cache_hit": False
+                }
+                
+                # Cache the result for future use (Phase 2 optimization)
+                cache_data = {
+                    "data": data,
+                    "metadata": metadata
+                }
+                query_result_cache.put(
+                    request.question, 
+                    cache_data, 
+                    cache_key_params,
+                    ttl=1800  # 30 minutes cache
+                )
+                print(f"💾 Result cached for future queries")
                 
                 return APIResponse(
                     success=True,

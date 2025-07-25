@@ -11,6 +11,14 @@ from dataclasses import dataclass, field
 from collections import OrderedDict
 from semantic_kernel.connectors.ai.embedding_generator_base import EmbeddingGeneratorBase
 
+# Import performance monitor for integration
+try:
+    from .performance_monitor_enhanced import performance_monitor
+    PERFORMANCE_INTEGRATION = True
+except ImportError:
+    PERFORMANCE_INTEGRATION = False
+    print("⚠️ Performance monitor not available for schema cache")
+
 
 @dataclass
 class CachedAnalysis:
@@ -131,7 +139,30 @@ class InMemorySchemaCache:
         return hashlib.md5(content.encode()).hexdigest()[:16]
     
     async def get_exact_match(self, question: str, context: str = "") -> Optional[Dict[str, Any]]:
-        """Enhanced exact cache match with LRU tracking"""
+        """Enhanced exact cache match with integrated performance tracking"""
+        
+        # Track cache lookup performance
+        if PERFORMANCE_INTEGRATION:
+            with performance_monitor.track_operation(
+                "schema_cache_exact_lookup",
+                question_length=len(question),
+                context_length=len(context),
+                cache_size=len(self.exact_cache)
+            ) as metric:
+                result = await self._get_exact_match_internal(question, context)
+                
+                # Add cache-specific metadata
+                metric.metadata.update({
+                    "cache_hit": result is not None,
+                    "cache_type": "exact"
+                })
+                
+                return result
+        else:
+            return await self._get_exact_match_internal(question, context)
+    
+    async def _get_exact_match_internal(self, question: str, context: str = "") -> Optional[Dict[str, Any]]:
+        """Internal exact match implementation"""
         self.stats.total_queries += 1
         
         cache_key = self._generate_cache_key(question, context)

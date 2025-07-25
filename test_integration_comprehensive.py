@@ -37,10 +37,14 @@ async def test_system_integration():
         session_id = f"test_session_{int(time.time())}"
         
         start_time = time.time()
-        result = await system.orchestrator_agent.process(
-            user_input=test_query,
-            session_id=session_id
-        )
+        result = await system.orchestrator_agent.process({
+            "question": test_query,
+            "session_id": session_id,
+            "user_id": f"test_user_{int(time.time())}",
+            "execute": True,
+            "limit": 10,
+            "include_summary": True
+        })
         basic_time = time.time() - start_time
         
         print(f"✅ Basic test completed in {basic_time:.2f}s")
@@ -72,10 +76,14 @@ async def test_system_integration():
             print(f"\n  Query {i}/3: {query}")
             
             start_time = time.time()
-            result = await system.orchestrator_agent.process(
-                user_input=query,
-                session_id=session_id
-            )
+            result = await system.orchestrator_agent.process({
+                "question": query,
+                "session_id": session_id,
+                "user_id": f"test_user_{int(time.time())}",
+                "execute": True,
+                "limit": 10,
+                "include_summary": True
+            })
             execution_time = time.time() - start_time
             
             success = result.get('success', False)
@@ -99,10 +107,14 @@ async def test_system_integration():
             print(f"\n  Query {i}/3: {query}")
             
             start_time = time.time()
-            result = await system.orchestrator_agent.process(
-                user_input=query,
-                session_id=session_id
-            )
+            result = await system.orchestrator_agent.process({
+                "question": query,
+                "session_id": session_id,
+                "user_id": f"test_user_{int(time.time())}",
+                "execute": True,
+                "limit": 10,
+                "include_summary": True
+            })
             execution_time = time.time() - start_time
             
             success = result.get('success', False)
@@ -170,10 +182,14 @@ async def test_system_integration():
         
         # Test follow-up detection
         follow_up_query = "What about their phone numbers?"
-        result = await system.orchestrator_agent.process(
-            user_input=follow_up_query,
-            session_id=session_id
-        )
+        result = await system.orchestrator_agent.process({
+            "question": follow_up_query,
+            "session_id": session_id,
+            "user_id": f"test_user_{int(time.time())}",
+            "execute": True,
+            "limit": 10,
+            "include_summary": True
+        })
         
         print(f"  Follow-up query: {'✅' if result.get('success') else '❌'}")
         
@@ -182,12 +198,17 @@ async def test_system_integration():
             context = await system.memory_service.get_conversation_context_with_summary(session_id, follow_up_query)
             print(f"  Context management: {'✅' if context else '❌'}")
             
-            # Test suggestions
-            suggestions = await system.memory_service.generate_contextual_suggestions(
-                session_id=session_id,
-                current_query=follow_up_query
-            )
-            print(f"  Contextual suggestions: {'✅' if suggestions else '❌'}")
+            # Test suggestions with correct interface
+            try:
+                suggestions = await system.memory_service.generate_contextual_suggestions(
+                    user_id=f"test_user_{int(time.time())}",
+                    current_query=follow_up_query,
+                    session_context=[],  # Empty for test
+                    limit=3
+                )
+                print(f"  Contextual suggestions: {'✅' if suggestions else '❌'}")
+            except Exception as e:
+                print(f"  Contextual suggestions: ❌ (Error: {str(e)[:50]}...)")
         
         # Cleanup
         await system.close()

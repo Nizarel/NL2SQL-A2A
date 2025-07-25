@@ -25,18 +25,29 @@ class OptimizedBaseAgent(AgentProtocol, ABC):
     """
     
     def __init__(self, agent_name: str, capabilities: List[str], kernel: sk.Kernel = None):
-        self.agent_name = agent_name
+        self._agent_name = agent_name
         self.capabilities = capabilities
         self.kernel = kernel
         self._initialized = False
         self._agent_id = f"{agent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         # Performance tracking
+        self.performance_metrics = {
+            "total_operations": 0,
+            "successful_operations": 0,
+            "average_response_time": 0.0,
+            "cache_hits": 0
+        }
         self._execution_count = 0
         self._total_execution_time = 0.0
         
         # Caching for repeated operations
         self._cache: Dict[str, Any] = {}
+    
+    @property
+    def agent_name(self) -> str:
+        """Return the agent name"""
+        return getattr(self, '_agent_name', 'OptimizedAgent')
         self._cache_enabled = True
         self._max_cache_size = 100
     

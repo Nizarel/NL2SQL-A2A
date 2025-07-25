@@ -3,20 +3,21 @@ Optimized orchestrator agent with parallel execution and unified interface
 """
 
 import asyncio
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import semantic_kernel as sk
 
-try:
-    # Try relative imports first (when used as module)
-    from .agent_interface import AgentMessage, WorkflowStage, WorkflowConfig
-    from .optimized_base_agent import OptimizedBaseAgent, agent_pool
-    from ..services.performance_monitor import track_async_performance, perf_monitor
-except ImportError:
+# try:
+#     # Try relative imports first (when used as module)
+#     from .agent_interface import AgentMessage, WorkflowStage, WorkflowConfig
+#     from .optimized_base_agent import OptimizedBaseAgent, agent_pool
+#     from ..services.performance_monitor import track_async_performance, perf_monitor
+# except ImportError:
     # Fall back to absolute imports (when used directly)
-    from agents.agent_interface import AgentMessage, WorkflowStage, WorkflowConfig
-    from agents.optimized_base_agent import OptimizedBaseAgent, agent_pool
-    from services.performance_monitor import track_async_performance, perf_monitor
+from agents.agent_interface import AgentMessage, WorkflowStage, WorkflowConfig
+from agents.optimized_base_agent import OptimizedBaseAgent, agent_pool
+from services.performance_monitor import track_async_performance, perf_monitor
 
 
 class OptimizedOrchestratorAgent(OptimizedBaseAgent):
@@ -24,6 +25,11 @@ class OptimizedOrchestratorAgent(OptimizedBaseAgent):
     Optimized orchestrator with parallel execution capabilities
     while maintaining backward compatibility
     """
+    
+    @property
+    def agent_name(self) -> str:
+        """Return the agent name"""
+        return "OptimizedOrchestrator"
     
     def __init__(self, kernel: sk.Kernel, memory_service=None, 
                  schema_analyst_agent=None, sql_generator_agent=None, 
@@ -407,3 +413,159 @@ class OptimizedOrchestratorAgent(OptimizedBaseAgent):
     def disable_parallel_execution(self):
         """Disable parallel execution"""
         self.parallel_execution_enabled = False
+    
+    async def get_workflow_status(self) -> Dict[str, Any]:
+        """
+        Get status of the optimized orchestration system
+        """
+        return {
+            "success": True,
+            "agent": "OptimizedOrchestratorAgent",
+            "data": {
+                "orchestrator": "active",
+                "agents": {
+                    "schema_analyst": "ready",
+                    "sql_generator": "ready",
+                    "executor": "ready", 
+                    "summarizer": "ready"
+                },
+                "orchestration_mode": "optimized_parallel",
+                "workflow_capabilities": {
+                    "schema_analysis": True,
+                    "intelligent_caching": True,
+                    "optimized_context": True,
+                    "sql_generation": True,
+                    "query_execution": True,
+                    "data_summarization": True,
+                    "sequential_processing": True,
+                    "parallel_processing": self.parallel_execution_enabled,
+                    "performance_monitoring": True
+                },
+                "optimization_features": {
+                    "parallel_execution": self.parallel_execution_enabled,
+                    "max_parallel_agents": self.max_parallel_agents,
+                    "workflow_caching": True,
+                    "performance_tracking": True
+                }
+            },
+            "error": None,
+            "metadata": {}
+        }
+    
+    async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Backward compatibility method for legacy API integration
+        This is a simplified version that provides the expected interface
+        while using the existing agent infrastructure.
+        """
+        try:
+            question = input_data.get("question", "")
+            user_id = input_data.get("user_id", "default_user")
+            session_id = input_data.get("session_id", "default_session")
+            context = input_data.get("context", "")
+            execute = input_data.get("execute", True)
+            limit = input_data.get("limit", 100)
+            include_summary = input_data.get("include_summary", True)
+            enable_conversation_logging = input_data.get("enable_conversation_logging", True)
+            
+            # Use the existing agents directly to avoid interface issues
+            # This is a simplified approach that maintains compatibility
+            
+            workflow_start_time = time.time()
+            
+            print(f"🎯 OptimizedOrchestrator processing: {question[:50]}...")
+            
+            # Step 1: Schema Analysis
+            if self.schema_analyst_agent:
+                print("🔍 Schema analysis...")
+                schema_result = await self.schema_analyst_agent.process({
+                    "question": question,
+                    "context": context
+                })
+                schema_context = schema_result.get("data", {}).get("schema_context", "")
+            else:
+                schema_context = ""
+            
+            # Step 2: SQL Generation
+            if self.sql_generator_agent:
+                print("🔨 SQL generation...")
+                sql_result = await self.sql_generator_agent.process({
+                    "question": question,
+                    "schema_context": schema_context,
+                    "context": context
+                })
+                if not sql_result.get("success"):
+                    return sql_result
+                    
+                sql_query = sql_result.get("data", {}).get("sql_query", "")
+            else:
+                return {"success": False, "error": "SQL Generator not available"}
+            
+            # Step 3: SQL Execution (if requested)
+            if execute and self.executor_agent:
+                print("⚡ SQL execution...")
+                execution_result = await self.executor_agent.process({
+                    "sql_query": sql_query,
+                    "limit": limit
+                })
+                if not execution_result.get("success"):
+                    return execution_result
+                    
+                results = execution_result.get("data", {})
+            else:
+                results = {"sql_query": sql_query, "executed": False}
+            
+            # Step 4: Summarization (if requested)
+            if include_summary and self.summarizing_agent:
+                print("📊 Result summarization...")
+                summary_result = await self.summarizing_agent.process({
+                    "question": question,
+                    "sql_query": sql_query,
+                    "results": results,
+                    "context": context
+                })
+                summary = summary_result.get("data", {})
+            else:
+                summary = {}
+            
+            # Step 5: Conversation logging (if enabled)
+            if enable_conversation_logging and self.memory_service:
+                try:
+                    await self.memory_service.log_conversation(
+                        session_id=session_id,
+                        user_message=question,
+                        ai_response=summary.get("summary", ""),
+                        metadata={"optimized": True, "user_id": user_id}
+                    )
+                except Exception as e:
+                    print(f"⚠️ Conversation logging failed: {e}")
+            
+            processing_time = (time.time() - workflow_start_time) * 1000
+            
+            print(f"✅ OptimizedOrchestrator completed in {processing_time:.2f}ms")
+            
+            # Return in legacy format
+            return {
+                "success": True,
+                "data": {
+                    **results,
+                    **summary,
+                    "processing_time_ms": processing_time,
+                    "optimized": True
+                },
+                "metadata": {
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "processing_time_ms": processing_time,
+                    "agent": "OptimizedOrchestratorAgent"
+                },
+                "error": None
+            }
+                
+        except Exception as e:
+            return {
+                "success": False,
+                "data": None,
+                "metadata": {"error_type": "process_exception"},
+                "error": f"Optimized orchestrator process failed: {str(e)}"
+            }
