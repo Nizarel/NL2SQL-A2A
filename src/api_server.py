@@ -8,7 +8,6 @@ import sys
 import asyncio
 import time
 import re
-import logging
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -30,9 +29,6 @@ print(f"🔍 API Server MCP_SERVER_URL: {mcp_url[:50] if mcp_url else 'None'}...
 
 # Add src to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# Initialize logger
-logger = logging.getLogger(__name__)
 
 from main import NL2SQLMultiAgentSystem
 from Models.api_models import QueryRequest, SQLGenerationRequest, SQLExecutionRequest, SummarizationRequest, ConversationAnalysisRequest, APIResponse
@@ -515,191 +511,6 @@ async def execute_sql(
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SQL execution failed: {str(e)}")
-
-
-# ======================================
-# Enhanced Conversation Endpoints
-# ======================================
-
-@app.post("/conversation/continue", response_model=APIResponse)
-async def continue_conversation(
-    request: QueryRequest,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """
-    Continue an existing conversation with enhanced context awareness.
-    Includes follow-up detection and contextual suggestions.
-    """
-    try:
-        # Get conversation context
-        context_data = await system.memory_service.get_conversation_context_with_summary(
-            user_id=request.user_id,
-            session_id=request.session_id or "default_session",
-            max_context_window=10
-        )
-        
-        # Detect follow-up query
-        follow_up_info = await system.memory_service.detect_follow_up_query(
-            request.question,
-            context_data.get("context_messages", [])
-        )
-        
-        # Process with enhanced context
-        result = await system.ask_question(
-            question=request.question,
-            execute=request.execute,
-            limit=request.limit,
-            include_summary=request.include_summary,
-            context=request.context,
-            user_id=request.user_id,
-            session_id=request.session_id or "default_session",
-            enable_conversation_logging=request.enable_conversation_logging
-        )
-        
-        # Add conversational elements to response
-        if result.get("success"):
-            # Generate suggestions for next queries
-            if context_data.get("context_messages"):
-                suggestions = await system.memory_service.generate_contextual_suggestions(
-                    request.user_id,
-                    request.question,
-                    context_data["context_messages"],
-                    limit=5
-                )
-                
-                if "data" in result:
-                    result["data"]["suggestions"] = suggestions
-                    result["data"]["conversation_turn"] = context_data.get("total_turns", 0) + 1
-                    result["data"]["follow_up_detected"] = follow_up_info.get("is_follow_up", False)
-                    result["data"]["conversation_summary"] = context_data.get("conversation_summary")
-        
-        return APIResponse(
-            success=result.get("success", False),
-            data=result.get("data"),
-            metadata={
-                **result.get("metadata", {}),
-                "conversation_context": {
-                    "has_history": context_data.get("has_history", False),
-                    "total_turns": context_data.get("total_turns", 0),
-                    "follow_up_info": follow_up_info
-                }
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Conversation continuation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Conversation continuation failed: {str(e)}")
-
-
-@app.get("/conversation/state/{session_id}", response_model=APIResponse)
-async def get_conversation_state(
-    session_id: str,
-    user_id: str,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Get the current state of a conversation session."""
-    try:
-        # Get session state
-        session_state = await system.memory_service.get_session_state(session_id, user_id)
-        
-        # Get recent context
-        context = await system.memory_service.get_conversation_context_with_summary(
-            user_id=user_id,
-            session_id=session_id,
-            max_context_window=5
-        )
-        
-        return APIResponse(
-            success=True,
-            data={
-                "session_id": session_id,
-                "user_id": user_id,
-                "state": session_state.model_dump(),
-                "conversation_summary": context.get("conversation_summary"),
-                "total_turns": context.get("total_turns", 0),
-                "has_history": context.get("has_history", False),
-                "last_interaction": context["context_messages"][-1].timestamp.isoformat() if context.get("context_messages") else None
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get conversation state: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get conversation state: {str(e)}")
-
-
-@app.post("/conversation/suggestions", response_model=APIResponse)
-async def get_contextual_suggestions(
-    user_id: str,
-    session_id: str,
-    current_query: Optional[str] = None,
-    limit: int = 5,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Get contextual query suggestions based on conversation history."""
-    try:
-        # Get conversation context
-        context_data = await system.memory_service.get_conversation_context_with_summary(
-            user_id=user_id,
-            session_id=session_id,
-            max_context_window=10
-        )
-        
-        # Generate suggestions
-        suggestions = await system.memory_service.generate_contextual_suggestions(
-            user_id=user_id,
-            current_query=current_query or "",
-            session_context=context_data.get("context_messages", []),
-            limit=limit
-        )
-        
-        return APIResponse(
-            success=True,
-            data={
-                "suggestions": suggestions,
-                "based_on_turns": len(context_data.get("context_messages", [])),
-                "has_conversation_history": context_data.get("has_history", False)
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get suggestions: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get suggestions: {str(e)}")
-
-
-@app.get("/conversation/history/{user_id}", response_model=APIResponse)
-async def get_conversation_history(
-    user_id: str,
-    session_id: Optional[str] = None,
-    limit: int = 10,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Get conversation history for a user."""
-    try:
-        history = await system.memory_service.get_user_conversation_history(
-            user_id=user_id,
-            session_id=session_id,
-            limit=limit
-        )
-        
-        # Convert to JSON-serializable format
-        history_data = []
-        for conv in history:
-            conv_dict = make_json_serializable(conv.model_dump())
-            history_data.append(conv_dict)
-        
-        return APIResponse(
-            success=True,
-            data={
-                "conversations": history_data,
-                "total_found": len(history),
-                "user_id": user_id,
-                "session_filter": session_id
-            }
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to get conversation history: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get conversation history: {str(e)}")
 
 
 # Error Handlers

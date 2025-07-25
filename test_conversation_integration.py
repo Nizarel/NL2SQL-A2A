@@ -33,7 +33,7 @@ async def test_conversation_integration():
         # Test 1: Initial query
         print("\n📝 Test 1: Initial Query")
         
-        initial_query = "Show top 3 customers by revenue with their details in March 2025"
+        initial_query = "Show me total sales for last month"
         
         result1 = await system.orchestrator_agent.process({
             "question": initial_query,
@@ -58,7 +58,7 @@ async def test_conversation_integration():
         # Test 2: Follow-up query
         print("🔄 Test 2: Follow-up Query")
         
-        follow_up_query = "What about their contact information?"
+        follow_up_query = "What about this month?"
         
         result2 = await system.orchestrator_agent.process({
             "question": follow_up_query,
