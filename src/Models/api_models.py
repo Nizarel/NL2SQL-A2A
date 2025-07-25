@@ -5,10 +5,13 @@ import time
 class QueryRequest(BaseModel):
     """Request model for natural language queries"""
     question: str = Field(..., description="Natural language question about the data")
+    user_id: str = Field(..., description="User identifier for conversation logging")
+    session_id: Optional[str] = Field(None, description="Session identifier for conversation logging")
     execute: bool = Field(True, description="Whether to execute the generated SQL query")
     limit: int = Field(100, ge=1, le=1000, description="Maximum number of rows to return")
     include_summary: bool = Field(True, description="Whether to generate AI summary and insights")
     context: str = Field("", description="Optional additional context for the question")
+    enable_conversation_logging: bool = Field(True, description="Whether to enable conversation logging")
 
 class SQLGenerationRequest(BaseModel):
     """Request model for SQL generation"""
@@ -28,6 +31,12 @@ class SummarizationRequest(BaseModel):
     sql_query: str = Field(..., description="Original SQL query")
     question: str = Field(..., description="Original user question")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Query execution metadata")
+
+class ConversationAnalysisRequest(BaseModel):
+    """Request model for conversation analysis from Cosmos DB"""
+    user_id: str = Field(..., description="User identifier")
+    session_id: str = Field(..., description="Session identifier")
+    limit: int = Field(5, ge=1, le=20, description="Number of recent conversations to analyze")
 
 class APIResponse(BaseModel):
     """Standard API response model"""

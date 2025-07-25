@@ -31,7 +31,7 @@ print(f"🔍 API Server MCP_SERVER_URL: {mcp_url[:50] if mcp_url else 'None'}...
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from main import NL2SQLMultiAgentSystem
-from Models.api_models import QueryRequest, SQLGenerationRequest, SQLExecutionRequest, SummarizationRequest, APIResponse
+from Models.api_models import QueryRequest, SQLGenerationRequest, SQLExecutionRequest, SummarizationRequest, ConversationAnalysisRequest, APIResponse
 from Models.schema_analysis_result import SchemaAnalysisResult
 
 
@@ -172,14 +172,18 @@ async def orchestrator_query(
     """
     try:
         print(f"🎯 Orchestrator query: {request.question}")
+        print(f"👤 User: {request.user_id}, Session: {request.session_id}")
         
-        result = await system.ask_question(
-            question=request.question,
-            execute=request.execute,
-            limit=request.limit,
-            include_summary=request.include_summary,
-            context=request.context
-        )
+        result = await system.orchestrator_agent.process({
+            "question": request.question,
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "execute": request.execute,
+            "limit": request.limit,
+            "include_summary": request.include_summary,
+            "context": request.context,
+            "enable_conversation_logging": request.enable_conversation_logging
+        })
         
         if result.get("success"):
             # Debug: Check data structure for serialization issues
@@ -227,14 +231,18 @@ async def orchestrator_formatted_results(
     """
     try:
         print(f"📊 Orchestrator formatted results: {request.question}")
+        print(f"👤 User: {request.user_id}, Session: {request.session_id}")
         
-        result = await system.ask_question(
-            question=request.question,
-            execute=request.execute,
-            limit=request.limit,
-            include_summary=request.include_summary,
-            context=request.context
-        )
+        result = await system.orchestrator_agent.process({
+            "question": request.question,
+            "user_id": request.user_id,
+            "session_id": request.session_id,
+            "execute": request.execute,
+            "limit": request.limit,
+            "include_summary": request.include_summary,
+            "context": request.context,
+            "enable_conversation_logging": request.enable_conversation_logging
+        })
         
         if result.get("success"):
             # Extract only formatted results and summary from the data
@@ -322,48 +330,155 @@ async def process_query_background(
         print(f"❌ Background task {task_id} failed: {str(e)}")
 
 
-# SQL Generator Agent Endpoints
-@app.post("/agents/sql-generator/generate", response_model=APIResponse)
-async def generate_sql(
-    request: SQLGenerationRequest,
+@app.post("/conversation/analyze", response_model=APIResponse)
+async def analyze_conversation_from_cosmos(
+    request: ConversationAnalysisRequest,
     system: NL2SQLMultiAgentSystem = Depends(get_system)
 ):
-    """Generate SQL query from natural language question"""
+    """Analyze conversation data retrieved from Cosmos DB"""
     try:
-        print(f"🧠 SQL Generation: {request.question}")
+        print(f"🗄️ Analyzing conversation from Cosmos DB")
+        print(f"👤 User: {request.user_id}, Session: {request.session_id}")
         
-        result = await system.sql_generator_agent.process({
-            "question": request.question,
-            "context": request.context
-        })
+        if not system.memory_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Memory service (Cosmos DB) not available"
+            )
         
-        if result.get("success"):
+        # Get conversation history from Cosmos DB
+        print("📖 Retrieving conversation history from Cosmos DB...")
+        conversation_history = await system.memory_service.get_user_conversation_history(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            limit=request.limit
+        )
+        
+        if not conversation_history:
             return APIResponse(
                 success=True,
-                data=result.get("data"),
-                metadata=result.get("metadata")
+                data={
+                    "message": "No conversation history found for the specified user and session",
+                    "user_id": request.user_id,
+                    "session_id": request.session_id
+                },
+                metadata={"conversation_count": 0}
             )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"SQL generation failed: {result.get('error', 'Unknown error')}"
-            )
+        
+        # Get session context (recent messages)
+        print("💬 Retrieving session messages...")
+        session_messages = await system.memory_service.get_session_context(
+            user_id=request.user_id,
+            session_id=request.session_id,
+            max_messages=request.limit * 2
+        )
+        
+        # Compile conversation analysis
+        conversation_analysis = {
+            "session_summary": {
+                "user_id": request.user_id,
+                "session_id": request.session_id,
+                "total_conversations": len(conversation_history),
+                "total_messages": len(session_messages),
+                "analysis_timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC")
+            },
+            "conversation_highlights": [],
+            "key_insights": [],
+            "conversation_patterns": {},
+            "business_summary": {
+                "executive_summary": "",
+                "main_topics": [],
+                "recommendations": []
+            }
+        }
+        
+        # Process each conversation log
+        for idx, conv in enumerate(conversation_history):
+            highlight = {
+                "conversation_number": idx + 1,
+                "user_input": conv.user_input,
+                "timestamp": conv.timestamp.isoformat() if conv.timestamp else "",
+                "conversation_type": conv.metadata.conversation_type if conv.metadata else "unknown",
+                "result_quality": conv.metadata.result_quality if conv.metadata else "unknown"
+            }
             
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SQL generation failed: {str(e)}")
-
-
-@app.get("/agents/sql-generator/schema", response_model=APIResponse)
-async def get_database_schema(system: NL2SQLMultiAgentSystem = Depends(get_system)):
-    """Get the database schema context used by SQL generator"""
-    try:
-        schema = await system.get_schema_context()
+            # Add agent response summary if available
+            if conv.agent_response:
+                highlight["executive_summary"] = conv.agent_response.executive_summary
+                highlight["confidence_level"] = conv.agent_response.confidence_level
+                highlight["key_insights_count"] = len(conv.agent_response.key_insights)
+                highlight["recommendations_count"] = len(conv.agent_response.recommendations)
+                
+                # Collect key insights
+                for insight in conv.agent_response.key_insights:
+                    conversation_analysis["key_insights"].append({
+                        "conversation": idx + 1,
+                        "insight": insight,  # insight is a string
+                        "timestamp": conv.timestamp.isoformat() if conv.timestamp else ""
+                    })
+            
+            conversation_analysis["conversation_highlights"].append(highlight)
+        
+        # Analyze conversation patterns
+        conversation_types = [conv.metadata.conversation_type if conv.metadata else "unknown" for conv in conversation_history]
+        result_qualities = [conv.metadata.result_quality if conv.metadata else "unknown" for conv in conversation_history]
+        
+        conversation_analysis["conversation_patterns"] = {
+            "conversation_types": {ctype: conversation_types.count(ctype) for ctype in set(conversation_types)},
+            "quality_distribution": {quality: result_qualities.count(quality) for quality in set(result_qualities)},
+            "most_common_conversation_type": max(set(conversation_types), key=conversation_types.count) if conversation_types else "unknown",
+            "average_insights_per_conversation": sum(len(conv.agent_response.key_insights) if conv.agent_response else 0 for conv in conversation_history) / len(conversation_history) if conversation_history else 0
+        }
+        
+        # Generate business summary
+        all_topics = []
+        all_recommendations = []
+        all_summaries = []
+        
+        for conv in conversation_history:
+            if conv.agent_response:
+                if hasattr(conv.agent_response, 'executive_summary'):
+                    all_summaries.append(conv.agent_response.executive_summary)
+                
+                # Extract topics from user inputs and insights
+                if conv.user_input:
+                    # Simple topic extraction based on keywords
+                    user_input_lower = conv.user_input.lower()
+                    if any(word in user_input_lower for word in ["revenue", "sales", "income", "profit"]):
+                        all_topics.append("Revenue Analysis")
+                    if any(word in user_input_lower for word in ["customer", "client", "user"]):
+                        all_topics.append("Customer Analytics")
+                    if any(word in user_input_lower for word in ["product", "inventory", "item"]):
+                        all_topics.append("Product Performance")
+                    if any(word in user_input_lower for word in ["trend", "time", "month", "year"]):
+                        all_topics.append("Time Series Analysis")
+                
+                # Collect recommendations
+                for rec in conv.agent_response.recommendations:
+                    all_recommendations.append(rec)  # rec is already a string
+        
+        conversation_analysis["business_summary"] = {
+            "executive_summary": f"Analyzed {len(conversation_history)} conversations from session {request.session_id}. " + 
+                               (f"Key focus areas include {', '.join(list(set(all_topics))[:3])}." if all_topics else "Mixed business analytics topics discussed."),
+            "main_topics": list(set(all_topics)),
+            "recommendations": list(set(all_recommendations))[:5],  # Top 5 unique recommendations
+            "conversation_summaries": all_summaries[:3]  # Recent summaries
+        }
+        
         return APIResponse(
             success=True,
-            data={"schema": schema}
+            data=conversation_analysis,
+            metadata={
+                "source": "cosmos_db",
+                "conversation_count": len(conversation_history),
+                "message_count": len(session_messages),
+                "analysis_type": "conversation_retrospective"
+            }
         )
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get schema: {str(e)}")
+        print(f"❌ Conversation analysis error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Conversation analysis failed: {str(e)}")
 
 
 # Executor Agent Endpoints
@@ -398,149 +513,6 @@ async def execute_sql(
         raise HTTPException(status_code=500, detail=f"SQL execution failed: {str(e)}")
 
 
-@app.get("/agents/executor/database-info", response_model=APIResponse)
-async def get_database_info(system: NL2SQLMultiAgentSystem = Depends(get_system)):
-    """Get database connection information and available tables"""
-    try:
-        db_info = await system.get_database_info()
-        return APIResponse(
-            success=True,
-            data={"database_info": str(db_info)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get database info: {str(e)}")
-
-
-# Summarizing Agent Endpoints
-@app.post("/agents/summarizer/analyze", response_model=APIResponse)
-async def analyze_data(
-    request: SummarizationRequest,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Generate summary and insights from query results"""
-    try:
-        print(f"📊 Data Analysis: {request.question}")
-        
-        result = await system.summarizing_agent.process({
-            "raw_results": request.raw_results,
-            "formatted_results": request.formatted_results,
-            "sql_query": request.sql_query,
-            "question": request.question,
-            "metadata": request.metadata
-        })
-        
-        if result.get("success"):
-            return APIResponse(
-                success=True,
-                data=result.get("data"),
-                metadata=result.get("metadata")
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Data analysis failed: {result.get('error', 'Unknown error')}"
-            )
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Data analysis failed: {str(e)}")
-
-
-# Combined Workflow Endpoints
-@app.post("/workflows/sql-only", response_model=APIResponse)
-async def sql_generation_only(
-    request: SQLGenerationRequest,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Generate SQL without execution (SQL generation only)"""
-    try:
-        result = await system.ask_question(
-            question=request.question,
-            context=request.context,
-            execute=False,
-            include_summary=False
-        )
-        
-        if result.get("success"):
-            return APIResponse(
-                success=True,
-                data=result.get("data"),
-                metadata=result.get("metadata")
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"SQL generation workflow failed: {result.get('error', 'Unknown error')}"
-            )
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SQL generation workflow failed: {str(e)}")
-
-
-@app.post("/workflows/sql-and-execute", response_model=APIResponse)
-async def sql_generation_and_execution(
-    request: QueryRequest,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Generate and execute SQL without summarization"""
-    try:
-        result = await system.ask_question(
-            question=request.question,
-            context=request.context,
-            execute=True,
-            limit=request.limit,
-            include_summary=False
-        )
-        
-        if result.get("success"):
-            return APIResponse(
-                success=True,
-                data=result.get("data"),
-                metadata=result.get("metadata")
-            )
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"SQL execution workflow failed: {result.get('error', 'Unknown error')}"
-            )
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"SQL execution workflow failed: {str(e)}")
-
-
-# Utility Endpoints
-@app.get("/database/tables", response_model=APIResponse)
-async def list_database_tables(system: NL2SQLMultiAgentSystem = Depends(get_system)):
-    """List all available database tables"""
-    try:
-        # Use the MCP plugin to list tables
-        tables_result = await system.mcp_plugin.list_tables()
-        
-        return APIResponse(
-            success=True,
-            data={"tables": str(tables_result)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list tables: {str(e)}")
-
-
-@app.get("/database/table/{table_name}/schema", response_model=APIResponse)
-async def get_table_schema(
-    table_name: str,
-    system: NL2SQLMultiAgentSystem = Depends(get_system)
-):
-    """Get schema information for a specific table"""
-    try:
-        # Use the MCP plugin to describe table
-        schema_result = await system.mcp_plugin.describe_table(table_name)
-        
-        return APIResponse(
-            success=True,
-            data={"table_schema": str(schema_result)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get table schema: {str(e)}")
-
-
 # Error Handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -551,7 +523,7 @@ async def http_exception_handler(request, exc):
             success=False,
             error=exc.detail,
             metadata={"status_code": exc.status_code}
-        ).dict()
+        ).model_dump()
     )
 
 
@@ -564,7 +536,7 @@ async def general_exception_handler(request, exc):
             success=False,
             error=f"Internal server error: {str(exc)}",
             metadata={"error_type": type(exc).__name__}
-        ).dict()
+        ).model_dump()
     )
 
 

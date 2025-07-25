@@ -15,6 +15,8 @@ from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureCha
 
 from plugins.mcp_database_plugin import MCPDatabasePlugin
 from services.schema_service import SchemaService
+from services.cosmos_db_service import CosmosDbService
+from services.orchestrator_memory_service import OrchestratorMemoryService
 from agents import SQLGeneratorAgent, ExecutorAgent, SummarizingAgent, OrchestratorAgent
 from agents.schema_analyst_agent import SchemaAnalystAgent
 
@@ -42,6 +44,8 @@ class NL2SQLMultiAgentSystem:
         self.kernel = None
         self.mcp_plugin = None
         self.schema_service = None
+        self.cosmos_service = None
+        self.memory_service = None
         
         # Initialize specialized agents
         self.sql_generator_agent = None
@@ -87,6 +91,15 @@ class NL2SQLMultiAgentSystem:
             print("Initializing database schema context...")
             schema_context = await self.schema_service.initialize_schema_context()
             print("✅ Schema context initialized successfully!")
+            
+            # Initialize Cosmos DB and Memory Service for conversation logging
+            print("🗄️ Initializing Cosmos DB and Memory Service...")
+            try:
+                self.memory_service = await OrchestratorMemoryService.create_from_config()
+                print("✅ Memory service initialized successfully!")
+            except Exception as e:
+                print(f"⚠️ Failed to initialize memory service (Cosmos DB logging disabled): {e}")
+                self.memory_service = None
             
             # Initialize specialized agents in parallel for better performance
             print("🤖 Initializing specialized agents in parallel...")
@@ -167,9 +180,13 @@ class NL2SQLMultiAgentSystem:
                 self.schema_analyst_agent,  # NEW: Pass Schema Analyst first
                 self.sql_generator_agent,
                 self.executor_agent, 
-                self.summarizing_agent
+                self.summarizing_agent,
+                self.memory_service  # NEW: Pass Memory Service for conversation logging
             )
-            print("✅ Orchestrator Agent initialized with Schema Analyst integration")
+            if self.memory_service:
+                print("✅ Orchestrator Agent initialized with Memory Service (Cosmos DB logging enabled)")
+            else:
+                print("✅ Orchestrator Agent initialized (Cosmos DB logging disabled)")
             
             print("🚀 Multi-Agent NL2SQL System initialized successfully!")
             
@@ -321,6 +338,14 @@ class NL2SQLMultiAgentSystem:
         """
         Close all connections and cleanup resources
         """
+        if self.memory_service:
+            try:
+                if hasattr(self.memory_service, 'close'):
+                    await self.memory_service.close()
+                print("🔒 Memory service closed")
+            except Exception as e:
+                print(f"⚠️ Memory service cleanup error: {e}")
+                
         if self.mcp_plugin:
             await self.mcp_plugin.close()
         print("🔐 Multi-Agent NL2SQL System closed successfully")
