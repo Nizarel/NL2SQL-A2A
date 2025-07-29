@@ -20,7 +20,7 @@ from .base_agent import BaseAgent
 from .sql_generator_agent import SQLGeneratorAgent
 from .executor_agent import ExecutorAgent
 from .summarizing_agent import SummarizingAgent
-from .schema_analyst_agent import SchemaAnalystAgent
+from .schema_analyst_agent import GenericSchemaAnalystAgent
 from services.orchestrator_memory_service import OrchestratorMemoryService
 from Models.agent_response import FormattedResults, AgentResponse
 
@@ -28,7 +28,7 @@ from Models.agent_response import FormattedResults, AgentResponse
 class OrchestratorAgent(BaseAgent):
     """
     Agent responsible for orchestrating the sequential multi-agent workflow:
-    1. SchemaAnalystAgent: Analyzes schema and provides optimized context
+    1. GenericSchemaAnalystAgent: Analyzes schema and provides optimized context
     2. SQLGeneratorAgent: Converts natural language to SQL using optimized context
     3. ExecutorAgent: Executes the generated SQL query
     4. SummarizingAgent: Analyzes results and generates insights
@@ -36,7 +36,7 @@ class OrchestratorAgent(BaseAgent):
     Enhanced with automatic conversation logging and session tracking.
     """
     
-    def __init__(self, kernel: Kernel, schema_analyst: SchemaAnalystAgent, 
+    def __init__(self, kernel: Kernel, schema_analyst: GenericSchemaAnalystAgent, 
                  sql_generator: SQLGeneratorAgent, executor: ExecutorAgent, 
                  summarizer: SummarizingAgent, memory_service: Optional[OrchestratorMemoryService] = None):
         super().__init__(kernel, "OrchestratorAgent")
@@ -72,7 +72,7 @@ class OrchestratorAgent(BaseAgent):
             # Create ChatCompletionAgents that wrap our specialized agents
             schema_analysis_agent = ChatCompletionAgent(
                 kernel=self.kernel,
-                name="SchemaAnalystAgent",
+                name="GenericSchemaAnalystAgent",
                 instructions="""You are a schema analysis specialist. Your role is to:
 1. Analyze natural language questions against the provided database schema
 2. Identify the most relevant tables and columns for the question
@@ -311,7 +311,7 @@ DATABASE SCHEMA (Use these exact table and column names):
 {schema_context}
 
 WORKFLOW INSTRUCTIONS:
-1. SchemaAnalystAgent: Analyze question to identify relevant tables from the schema above
+1. GenericSchemaAnalystAgent: Analyze question to identify relevant tables from the schema above
 2. SQLGeneratorAgent: Generate EXECUTABLE SQL query using ONLY the table/column names from the schema above
    - Use dev.tablename format for all tables
    - Use actual column names from the schema (e.g., IngresoNetoSImpuestos for revenue)

@@ -1,32 +1,35 @@
 """
-In-Memory Schema Analysis Cache Service
-Handles caching and retrieval of schema analysis results with semantic similarity
+Generic Cache Service - Reusable caching with semantic similarity support
+Can be used for any type of data caching in AI projects
 """
 
 import time
 import hashlib
-import asyncio
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, TypeVar, Generic, Protocol
 from dataclasses import dataclass, field
 from collections import OrderedDict
-from semantic_kernel.connectors.ai.embedding_generator_base import EmbeddingGeneratorBase
+from abc import ABC, abstractmethod
+
+
+T = TypeVar('T')
+
+
+class EmbeddingServiceProtocol(Protocol):
+    """Protocol for embedding services"""
+    async def generate_embeddings(self, texts: List[str]) -> Any:
+        ...
 
 
 @dataclass
-class CachedAnalysis:
-    """Enhanced data class for cached schema analysis with LRU tracking"""
-    analysis_data: Dict[str, Any]
-    embedding: Optional[List[float]]
-    timestamp: float
-    question: str
-    context: str
+class CacheEntry(Generic[T]):
+    """Generic cache entry with metadata"""
+    data: T
+    key: str
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    embedding: Optional[List[float]] = None
     access_count: int = 0
     last_accessed: float = field(default_factory=time.time)
-    question_key: str = ""
-    
-    def __post_init__(self):
-        if not self.question_key:
-            self.question_key = hashlib.md5(f"{self.question}|{self.context}".encode()).hexdigest()[:16]
     
     def mark_accessed(self):
         """Mark this entry as recently accessed"""
@@ -35,491 +38,398 @@ class CachedAnalysis:
 
 
 @dataclass
-class CacheStatistics:
-    """Enhanced cache statistics with performance metrics"""
-    exact_hits: int = 0
-    semantic_hits: int = 0
-    misses: int = 0
-    total_queries: int = 0
-    evictions: int = 0
-    batch_operations: int = 0
-    average_similarity: float = 0.0
-    total_similarity: float = 0.0
-    similarity_count: int = 0
+class CacheConfig:
+    """Configuration for cache behavior"""
+    max_size: int = 100
+    ttl_seconds: int = 86400  # 24 hours
+    enable_semantic: bool = True
+    similarity_threshold: float = 0.85
+    enable_stats: bool = True
+    batch_size: int = 10
+    cleanup_interval: int = 1800  # 30 minutes
+
+
+class CacheStats:
+    """Generic cache statistics"""
+    
+    def __init__(self):
+        self.hits: int = 0
+        self.misses: int = 0
+        self.evictions: int = 0
+        self.operations: Dict[str, int] = {}
+        self._reset_time = time.time()
+    
+    def record_hit(self, hit_type: str = "exact"):
+        """Record a cache hit"""
+        self.hits += 1
+        self.operations[f"hit_{hit_type}"] = self.operations.get(f"hit_{hit_type}", 0) + 1
+    
+    def record_miss(self):
+        """Record a cache miss"""
+        self.misses += 1
+    
+    def record_eviction(self, count: int = 1):
+        """Record cache evictions"""
+        self.evictions += count
     
     @property
     def hit_rate(self) -> float:
-        return (self.exact_hits + self.semantic_hits) / max(self.total_queries, 1) * 100
+        """Calculate hit rate"""
+        total = self.hits + self.misses
+        return (self.hits / total * 100) if total > 0 else 0.0
     
-    @property
-    def semantic_hit_rate(self) -> float:
-        return self.semantic_hits / max(self.total_queries, 1) * 100
-    
-    def record_similarity(self, similarity: float):
-        """Record similarity score for average calculation"""
-        self.total_similarity += similarity
-        self.similarity_count += 1
-        self.average_similarity = self.total_similarity / self.similarity_count
+    def get_summary(self) -> Dict[str, Any]:
+        """Get statistics summary"""
+        uptime = time.time() - self._reset_time
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": round(self.hit_rate, 2),
+            "evictions": self.evictions,
+            "operations": self.operations,
+            "uptime_seconds": round(uptime, 2)
+        }
 
 
-class InMemorySchemaCache:
+class CacheStrategy(ABC):
+    """Abstract base class for cache strategies"""
+    
+    @abstractmethod
+    def should_evict(self, entry: CacheEntry, current_time: float, config: CacheConfig) -> bool:
+        """Determine if an entry should be evicted"""
+        pass
+    
+    @abstractmethod
+    def get_eviction_candidates(self, cache: OrderedDict, target_size: int) -> List[str]:
+        """Get list of keys to evict"""
+        pass
+
+
+class LRUStrategy(CacheStrategy):
+    """Least Recently Used eviction strategy"""
+    
+    def should_evict(self, entry: CacheEntry, current_time: float, config: CacheConfig) -> bool:
+        """Check if entry is expired"""
+        return (current_time - entry.timestamp) > config.ttl_seconds
+    
+    def get_eviction_candidates(self, cache: OrderedDict, target_size: int) -> List[str]:
+        """Get LRU candidates for eviction"""
+        candidates = []
+        current_size = len(cache)
+        
+        if current_size <= target_size:
+            return candidates
+        
+        # Get oldest entries (first in OrderedDict)
+        for key in list(cache.keys())[:current_size - target_size]:
+            candidates.append(key)
+        
+        return candidates
+
+
+class GenericCache(Generic[T]):
     """
-    Enhanced in-memory cache for schema analysis results with LRU eviction,
-    batch processing, and performance monitoring
+    Generic cache implementation with pluggable strategies
+    Supports both exact and semantic matching
     """
     
-    def __init__(self, 
-                 max_size: int = 100, 
-                 max_age_hours: int = 24,
-                 similarity_threshold: float = 0.85,
-                 performance_tracking: bool = True):
-        # Enhanced configuration
-        self.max_size = max_size
-        self.max_age_seconds = max_age_hours * 3600
-        self._similarity_threshold = similarity_threshold
-        self._performance_tracking = performance_tracking
+    def __init__(
+        self,
+        config: Optional[CacheConfig] = None,
+        strategy: Optional[CacheStrategy] = None,
+        key_generator: Optional[callable] = None
+    ):
+        self.config = config or CacheConfig()
+        self.strategy = strategy or LRUStrategy()
+        self.key_generator = key_generator or self._default_key_generator
         
-        # Enhanced LRU storage using OrderedDict
-        self.exact_cache: OrderedDict[str, CachedAnalysis] = OrderedDict()
-        self.semantic_cache: OrderedDict[str, CachedAnalysis] = OrderedDict()
+        # Storage
+        self._cache: OrderedDict[str, CacheEntry[T]] = OrderedDict()
+        self._embeddings_index: Dict[str, List[float]] = {}
         
-        # Enhanced statistics with CacheStatistics class
-        self.stats = CacheStatistics()
+        # Statistics
+        self.stats = CacheStats() if self.config.enable_stats else None
         
-        # Performance monitoring
-        self._access_patterns: Dict[str, List[float]] = {}
-        self._pending_batch_operations: List[Tuple[str, CachedAnalysis]] = []
-        self._batch_size = 10
+        # Batch processing
+        self._pending_batch: List[Tuple[str, CacheEntry[T]]] = []
+        
+        # Maintenance
         self._last_cleanup = time.time()
-        self._cleanup_interval = 30 * 60  # 30 minutes
-        
-        print(f"🗄️ Enhanced Schema Cache initialized: max_size={max_size}, "
-              f"similarity_threshold={similarity_threshold}, performance_tracking={performance_tracking}")
-
-    def _evict_lru_entries(self, cache_dict: OrderedDict, target_size: int):
-        """Enhanced LRU eviction with performance tracking"""
-        evicted_count = 0
-        while len(cache_dict) >= target_size:
-            # Remove least recently used item (first item in OrderedDict)
-            key, entry = cache_dict.popitem(last=False)
-            evicted_count += 1
-            
-            # Clean up access patterns
-            if key in self._access_patterns:
-                del self._access_patterns[key]
-        
-        if evicted_count > 0:
-            self.stats.evictions += evicted_count
-            if self._performance_tracking:
-                print(f"� LRU eviction: removed {evicted_count} entries")
     
-    def _update_access_pattern(self, key: str):
-        """Track access patterns for predictive caching"""
-        if key not in self._access_patterns:
-            self._access_patterns[key] = []
-        
-        access_time = time.time()
-        self._access_patterns[key].append(access_time)
-        
-        # Keep only recent access times (last 10 accesses)
-        if len(self._access_patterns[key]) > 10:
-            self._access_patterns[key] = self._access_patterns[key][-10:]
-    
-    def _generate_cache_key(self, question: str, context: str) -> str:
-        """Generate cache key for exact matching"""
-        content = f"{question.strip().lower()}|{context.strip().lower()}"
+    def _default_key_generator(self, *args, **kwargs) -> str:
+        """Default key generation from arguments"""
+        content = str(args) + str(sorted(kwargs.items()))
         return hashlib.md5(content.encode()).hexdigest()[:16]
     
-    async def get_exact_match(self, question: str, context: str = "") -> Optional[Dict[str, Any]]:
-        """Enhanced exact cache match with LRU tracking"""
-        self.stats.total_queries += 1
+    async def get(
+        self, 
+        key: str,
+        semantic_key: Optional[str] = None,
+        embedding_service: Optional[EmbeddingServiceProtocol] = None
+    ) -> Optional[T]:
+        """Get item from cache with optional semantic search"""
         
-        cache_key = self._generate_cache_key(question, context)
-        
-        if cache_key in self.exact_cache:
-            cached = self.exact_cache[cache_key]
+        # Try exact match first
+        if key in self._cache:
+            entry = self._cache[key]
             
             # Check if not expired
-            if time.time() - cached.timestamp < self.max_age_seconds:
-                # Mark as accessed and move to end (most recently used)
-                cached.mark_accessed()
-                self.exact_cache.move_to_end(cache_key)
+            if not self.strategy.should_evict(entry, time.time(), self.config):
+                entry.mark_accessed()
+                self._cache.move_to_end(key)
                 
-                # Update access patterns
-                self._update_access_pattern(cache_key)
+                if self.stats:
+                    self.stats.record_hit("exact")
                 
-                self.stats.exact_hits += 1
-                if self._performance_tracking:
-                    print(f"⚡ Exact cache hit (access #{cached.access_count}) for: {question[:30]}...")
-                return cached.analysis_data
+                return entry.data
             else:
                 # Remove expired entry
-                del self.exact_cache[cache_key]
-                if cache_key in self._access_patterns:
-                    del self._access_patterns[cache_key]
+                del self._cache[key]
+        
+        # Try semantic match if enabled
+        if self.config.enable_semantic and semantic_key and embedding_service:
+            result = await self._semantic_search(semantic_key, embedding_service)
+            if result:
+                if self.stats:
+                    self.stats.record_hit("semantic")
+                return result
+        
+        if self.stats:
+            self.stats.record_miss()
         
         return None
     
-    async def get_semantic_match(self, question: str, context: str, 
-                                embedding_service: EmbeddingGeneratorBase,
-                                similarity_threshold: float = None) -> Optional[Dict[str, Any]]:
-        """Enhanced semantic cache match with LRU tracking and performance monitoring"""
-        if similarity_threshold is None:
-            similarity_threshold = self._similarity_threshold
-            
-        if not embedding_service or not self.semantic_cache:
-            return None
-        
+    async def _semantic_search(
+        self, 
+        query: str,
+        embedding_service: EmbeddingServiceProtocol
+    ) -> Optional[T]:
+        """Perform semantic search in cache"""
         try:
-            # Generate embedding for current question
-            query_text = f"{question} {context}".strip()
-            embeddings = await embedding_service.generate_embeddings([query_text])
-            
-            # Handle embedding result properly
-            if not self._is_valid_embedding(embeddings):
+            # Generate query embedding
+            embeddings = await embedding_service.generate_embeddings([query])
+            if not embeddings:
                 return None
             
-            # Convert embedding to list
-            query_embedding = self._normalize_embedding(embeddings[0] if hasattr(embeddings, '__getitem__') else embeddings)
+            query_embedding = self._normalize_embedding(embeddings[0])
             
-            # Enhanced search through semantic cache with LRU tracking
-            best_similarity = 0
-            best_match = None
-            best_key = None
+            # Find best match
+            best_score = 0.0
+            best_entry = None
             
-            # Convert to list for iteration while maintaining order
-            cache_items = list(self.semantic_cache.items())
+            for key, entry in self._cache.items():
+                if entry.embedding:
+                    score = self._cosine_similarity(query_embedding, entry.embedding)
+                    if score > best_score and score >= self.config.similarity_threshold:
+                        best_score = score
+                        best_entry = entry
             
-            for cache_key, cached in cache_items:
-                # Check if not expired
-                if time.time() - cached.timestamp >= self.max_age_seconds:
-                    # Remove expired entry
-                    del self.semantic_cache[cache_key]
-                    if cache_key in self._access_patterns:
-                        del self._access_patterns[cache_key]
-                    continue
-                
-                if cached.embedding:
-                    similarity = self._calculate_cosine_similarity(query_embedding, cached.embedding)
-                    
-                    if similarity > best_similarity and similarity >= similarity_threshold:
-                        best_similarity = similarity
-                        best_match = cached
-                        best_key = cache_key
+            if best_entry:
+                best_entry.mark_accessed()
+                return best_entry.data
             
-            if best_match and best_key:
-                # Mark as accessed and move to end (most recently used)
-                best_match.mark_accessed()
-                self.semantic_cache.move_to_end(best_key)
-                
-                # Update access patterns and statistics
-                self._update_access_pattern(best_key)
-                self.stats.semantic_hits += 1
-                self.stats.record_similarity(best_similarity)
-                
-                if self._performance_tracking:
-                    print(f"🧠 Semantic cache hit (similarity: {best_similarity:.3f}, access #{best_match.access_count}) "
-                          f"for: {question[:30]}...")
-                
-                return {
-                    "data": best_match.analysis_data,
-                    "similarity": best_similarity,
-                    "cached_question": best_match.question,
-                    "access_count": best_match.access_count
-                }
-            
-            return None
-            
-        except Exception as e:
-            print(f"⚠️ Enhanced semantic cache lookup failed: {e}")
-            return None
+        except Exception:
+            pass
+        
+        return None
     
-    async def store_analysis(self, question: str, context: str, analysis_data: Dict[str, Any],
-                           embedding_service: Optional[EmbeddingGeneratorBase] = None,
-                           batch_mode: bool = False):
-        """Enhanced store analysis with batch processing and LRU management"""
-        try:
-            # Store in exact cache with LRU management
-            cache_key = self._generate_cache_key(question, context)
-            
-            # Generate embedding if service available
-            embedding = None
-            if embedding_service:
-                try:
-                    query_text = f"{question} {context}".strip()
-                    embeddings = await embedding_service.generate_embeddings([query_text])
-                    
-                    # Handle embedding result properly
-                    if self._is_valid_embedding(embeddings):
-                        embedding = self._normalize_embedding(embeddings[0] if hasattr(embeddings, '__getitem__') else embeddings)
-                except Exception as e:
-                    print(f"⚠️ Failed to generate embedding for cache: {e}")
-            
-            # Create enhanced cached analysis
-            cached = CachedAnalysis(
-                analysis_data=analysis_data,
-                embedding=embedding,
-                timestamp=time.time(),
-                question=question,
-                context=context
+    async def put(
+        self,
+        key: str,
+        value: T,
+        metadata: Optional[Dict[str, Any]] = None,
+        semantic_key: Optional[str] = None,
+        embedding_service: Optional[EmbeddingServiceProtocol] = None,
+        batch: bool = False
+    ):
+        """Store item in cache"""
+        
+        # Create cache entry
+        entry = CacheEntry(
+            data=value,
+            key=key,
+            metadata=metadata or {}
+        )
+        
+        # Generate embedding if semantic search is enabled
+        if self.config.enable_semantic and semantic_key and embedding_service:
+            try:
+                embeddings = await embedding_service.generate_embeddings([semantic_key])
+                if embeddings:
+                    entry.embedding = self._normalize_embedding(embeddings[0])
+            except Exception:
+                pass
+        
+        if batch:
+            self._pending_batch.append((key, entry))
+            if len(self._pending_batch) >= self.config.batch_size:
+                await self.flush_batch()
+        else:
+            await self._store_entry(key, entry)
+    
+    async def _store_entry(self, key: str, entry: CacheEntry[T]):
+        """Store single entry with eviction if needed"""
+        
+        # Add to cache
+        self._cache[key] = entry
+        self._cache.move_to_end(key)
+        
+        # Handle eviction
+        if len(self._cache) > self.config.max_size:
+            candidates = self.strategy.get_eviction_candidates(
+                self._cache, 
+                self.config.max_size
             )
             
-            if batch_mode:
-                # Add to batch operations queue
-                self._pending_batch_operations.append((cache_key, cached))
-                
-                # Process batch if size reached
-                if len(self._pending_batch_operations) >= self._batch_size:
-                    await self._process_batch_operations()
-                    
-                return
+            for candidate_key in candidates:
+                del self._cache[candidate_key]
             
-            # Store immediately with LRU management
-            await self._store_single_entry(cache_key, cached)
-            
-        except Exception as e:
-            print(f"⚠️ Failed to store analysis in enhanced cache: {e}")
-
-    async def _store_single_entry(self, cache_key: str, cached: CachedAnalysis):
-        """Store single cache entry with LRU management"""
-        # Store in exact cache (LRU managed)
-        self.exact_cache[cache_key] = cached
-        self.exact_cache.move_to_end(cache_key)  # Mark as most recently used
+            if self.stats and candidates:
+                self.stats.record_eviction(len(candidates))
         
-        # Store in semantic cache if embedding available (LRU managed)
-        if cached.embedding:
-            semantic_key = f"sem_{cache_key}"
-            self.semantic_cache[semantic_key] = cached
-            self.semantic_cache.move_to_end(semantic_key)
-        
-        # Apply LRU eviction if needed
-        if len(self.exact_cache) > self.max_size:
-            self._evict_lru_entries(self.exact_cache, self.max_size)
-        
-        if len(self.semantic_cache) > self.max_size:
-            self._evict_lru_entries(self.semantic_cache, self.max_size)
-        
-        # Perform cleanup if needed
-        await self._cleanup_cache()
-        
-        if self._performance_tracking:
-            print(f"💾 Enhanced cache stored: {cached.question[:30]}... "
-                  f"(exact: {len(self.exact_cache)}, semantic: {len(self.semantic_cache)})")
-
-    async def _process_batch_operations(self):
-        """Process pending batch operations for better performance"""
-        if not self._pending_batch_operations:
+        # Periodic cleanup
+        await self._maybe_cleanup()
+    
+    async def flush_batch(self):
+        """Process pending batch operations"""
+        if not self._pending_batch:
             return
         
-        batch_size = len(self._pending_batch_operations)
+        for key, entry in self._pending_batch:
+            await self._store_entry(key, entry)
         
-        # Process all pending operations
-        for cache_key, cached in self._pending_batch_operations:
-            await self._store_single_entry(cache_key, cached)
-        
-        # Clear batch queue
-        self._pending_batch_operations.clear()
-        self.stats.batch_operations += 1
-        
-        if self._performance_tracking:
-            print(f"📦 Batch processed: {batch_size} cache operations")
-
-    async def flush_batch_operations(self):
-        """Manually flush any pending batch operations"""
-        if self._pending_batch_operations:
-            await self._process_batch_operations()
+        self._pending_batch.clear()
     
-    def _is_valid_embedding(self, embeddings) -> bool:
-        """Check if embedding result is valid"""
-        if embeddings is None:
-            return False
+    async def _maybe_cleanup(self):
+        """Perform cleanup if interval has passed"""
+        current_time = time.time()
         
-        # Handle numpy arrays and lists
-        try:
-            if hasattr(embeddings, '__len__'):
-                return len(embeddings) > 0
-            return False
-        except Exception:
-            return False
+        if current_time - self._last_cleanup < self.config.cleanup_interval:
+            return
+        
+        # Remove expired entries
+        expired_keys = [
+            key for key, entry in self._cache.items()
+            if self.strategy.should_evict(entry, current_time, self.config)
+        ]
+        
+        for key in expired_keys:
+            del self._cache[key]
+        
+        self._last_cleanup = current_time
     
-    def _normalize_embedding(self, embedding) -> List[float]:
+    def _normalize_embedding(self, embedding: Any) -> List[float]:
         """Normalize embedding to list format"""
         if hasattr(embedding, 'tolist'):
             return embedding.tolist()
-        elif hasattr(embedding, '__iter__'):
-            return list(embedding)
-        else:
+        elif isinstance(embedding, list):
             return embedding
+        else:
+            return list(embedding)
     
-    def _calculate_cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """Calculate cosine similarity between two vectors"""
-        try:
-            import math
-            
-            if len(vec1) != len(vec2):
-                return 0.0
-            
-            dot_product = sum(a * b for a, b in zip(vec1, vec2))
-            magnitude1 = math.sqrt(sum(a * a for a in vec1))
-            magnitude2 = math.sqrt(sum(a * a for a in vec2))
-            
-            if magnitude1 == 0.0 or magnitude2 == 0.0:
-                return 0.0
-            
-            return dot_product / (magnitude1 * magnitude2)
-            
-        except Exception:
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between vectors"""
+        if len(vec1) != len(vec2):
             return 0.0
+        
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        mag1 = sum(a * a for a in vec1) ** 0.5
+        mag2 = sum(b * b for b in vec2) ** 0.5
+        
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+        
+        return dot_product / (mag1 * mag2)
     
-    async def _cleanup_cache(self):
-        """Enhanced cleanup with performance monitoring"""
-        try:
-            current_time = time.time()
-            
-            # Skip cleanup if not enough time has passed
-            if current_time - self._last_cleanup < self._cleanup_interval:
-                return
-            
-            initial_exact_size = len(self.exact_cache)
-            initial_semantic_size = len(self.semantic_cache)
-            
-            # Cleanup exact cache by age
-            expired_keys = [
-                key for key, cached in self.exact_cache.items()
-                if current_time - cached.timestamp > self.max_age_seconds
-            ]
-            
-            for key in expired_keys:
-                del self.exact_cache[key]
-                # Clean up access patterns
-                if key in self._access_patterns:
-                    del self._access_patterns[key]
-            
-            # Cleanup semantic cache by age
-            expired_semantic = []
-            for key, cached in list(self.semantic_cache.items()):
-                if current_time - cached.timestamp > self.max_age_seconds:
-                    expired_semantic.append(key)
-            
-            for key in expired_semantic:
-                del self.semantic_cache[key]
-                if key in self._access_patterns:
-                    del self._access_patterns[key]
-            
-            # Update cleanup timestamp
-            self._last_cleanup = current_time
-            
-            # Log cleanup results if tracking enabled
-            if self._performance_tracking and (expired_keys or expired_semantic):
-                exact_cleaned = len(expired_keys)
-                semantic_cleaned = len(expired_semantic)
-                print(f"🧹 Cache cleanup: removed {exact_cleaned} exact, {semantic_cleaned} semantic entries "
-                      f"(ages: {initial_exact_size}→{len(self.exact_cache)}, {initial_semantic_size}→{len(self.semantic_cache)})")
+    def clear(self):
+        """Clear all cache entries"""
+        self._cache.clear()
+        self._embeddings_index.clear()
+        self._pending_batch.clear()
         
-        except Exception as e:
-            print(f"⚠️ Cache cleanup error: {e}")
-
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics"""
-        return {
-            "cache_sizes": {
-                "exact_cache": len(self.exact_cache),
-                "semantic_cache": len(self.semantic_cache),
-                "access_patterns": len(self._access_patterns),
-                "pending_batch": len(self._pending_batch_operations)
-            },
-            "hit_rates": {
-                "overall_hit_rate": self.stats.hit_rate,
-                "exact_hit_rate": (self.stats.exact_hits / max(self.stats.total_queries, 1)) * 100,
-                "semantic_hit_rate": self.stats.semantic_hit_rate
-            },
-            "statistics": {
-                "exact_hits": self.stats.exact_hits,
-                "semantic_hits": self.stats.semantic_hits,
-                "misses": self.stats.misses,
-                "total_queries": self.stats.total_queries,
-                "evictions": self.stats.evictions,
-                "batch_operations": self.stats.batch_operations,
-                "average_similarity": round(self.stats.average_similarity, 4)
-            },
-            "configuration": {
-                "max_size": self.max_size,
-                "max_age_hours": self.max_age_seconds / 3600,
-                "similarity_threshold": self._similarity_threshold,
-                "batch_size": self._batch_size,
-                "performance_tracking": self._performance_tracking
-            }
+        if self.stats:
+            self.stats = CacheStats()
+    
+    def get_info(self) -> Dict[str, Any]:
+        """Get cache information"""
+        info = {
+            "size": len(self._cache),
+            "max_size": self.config.max_size,
+            "ttl_seconds": self.config.ttl_seconds,
+            "semantic_enabled": self.config.enable_semantic
         }
+        
+        if self.stats:
+            info["stats"] = self.stats.get_summary()
+        
+        return info
 
-    def print_performance_summary(self):
-        """Print comprehensive performance summary"""
-        stats = self.get_performance_stats()
-        
-        print("\n" + "="*60)
-        print("📊 ENHANCED SCHEMA CACHE PERFORMANCE SUMMARY")
-        print("="*60)
-        
-        print(f"🎯 Hit Rates:")
-        print(f"   Overall: {stats['hit_rates']['overall_hit_rate']:.1f}%")
-        print(f"   Exact: {stats['hit_rates']['exact_hit_rate']:.1f}%")
-        print(f"   Semantic: {stats['hit_rates']['semantic_hit_rate']:.1f}%")
-        
-        print(f"\n📈 Query Statistics:")
-        print(f"   Total Queries: {stats['statistics']['total_queries']}")
-        print(f"   Exact Hits: {stats['statistics']['exact_hits']}")
-        print(f"   Semantic Hits: {stats['statistics']['semantic_hits']}")
-        print(f"   Misses: {stats['statistics']['misses']}")
-        print(f"   Avg Similarity: {stats['statistics']['average_similarity']}")
-        
-        print(f"\n🗄️ Cache Sizes:")
-        print(f"   Exact Cache: {stats['cache_sizes']['exact_cache']}")
-        print(f"   Semantic Cache: {stats['cache_sizes']['semantic_cache']}")
-        print(f"   Access Patterns: {stats['cache_sizes']['access_patterns']}")
-        
-        print(f"\n⚙️ Performance Metrics:")
-        print(f"   LRU Evictions: {stats['statistics']['evictions']}")
-        print(f"   Batch Operations: {stats['statistics']['batch_operations']}")
-        print(f"   Pending Batch: {stats['cache_sizes']['pending_batch']}")
-        
-        print("="*60)
 
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get cache statistics (legacy method for compatibility)"""
-        stats = self.get_performance_stats()
-        return {
-            "exact_hits": stats['statistics']['exact_hits'],
-            "semantic_hits": stats['statistics']['semantic_hits'], 
-            "misses": stats['statistics']['misses'],
-            "total_queries": stats['statistics']['total_queries'],
-            "hit_rate": stats['hit_rates']['overall_hit_rate'],
-            "cache_size": stats['cache_sizes']['exact_cache'],
-            "semantic_cache_size": stats['cache_sizes']['semantic_cache']
+# Specialized cache for schema analysis
+class SchemaAnalysisCache(GenericCache[Dict[str, Any]]):
+    """Specialized cache for schema analysis results"""
+    
+    def __init__(self, config: Optional[CacheConfig] = None):
+        super().__init__(
+            config=config,
+            key_generator=self._schema_key_generator
+        )
+    
+    def _schema_key_generator(self, question: str, context: str = "") -> str:
+        """Generate cache key for schema analysis"""
+        content = f"{question.strip().lower()}|{context.strip().lower()}"
+        return hashlib.md5(content.encode()).hexdigest()[:16]
+    
+    async def get_analysis(
+        self,
+        question: str,
+        context: str = "",
+        embedding_service: Optional[EmbeddingServiceProtocol] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached analysis result"""
+        key = self._schema_key_generator(question, context)
+        semantic_key = f"{question} {context}".strip() if embedding_service else None
+        
+        return await self.get(key, semantic_key, embedding_service)
+    
+    async def store_analysis(
+        self,
+        question: str,
+        context: str,
+        analysis_data: Dict[str, Any],
+        embedding_service: Optional[EmbeddingServiceProtocol] = None,
+        batch: bool = False
+    ):
+        """Store analysis result"""
+        key = self._schema_key_generator(question, context)
+        semantic_key = f"{question} {context}".strip() if embedding_service else None
+        
+        metadata = {
+            "question": question,
+            "context": context,
+            "timestamp": time.time()
         }
-
-    def print_statistics(self):
-        """Print cache statistics (legacy method for compatibility)"""
-        self.print_performance_summary()
-
-    def clear_cache(self):
-        """Enhanced cache clearing with performance tracking reset"""
-        initial_exact = len(self.exact_cache)
-        initial_semantic = len(self.semantic_cache)
         
-        self.exact_cache.clear()
-        self.semantic_cache.clear()
-        self._access_patterns.clear()
-        self._pending_batch_operations.clear()
-        
-        # Reset statistics
-        self.stats = CacheStatistics()
-        
-        if self._performance_tracking:
-            print(f"🗑️ Cache cleared: removed {initial_exact} exact, {initial_semantic} semantic entries")
+        await self.put(
+            key=key,
+            value=analysis_data,
+            metadata=metadata,
+            semantic_key=semantic_key,
+            embedding_service=embedding_service,
+            batch=batch
+        )
 
-# Create enhanced default cache instance
-default_schema_cache = InMemorySchemaCache(
-    max_size=100, 
-    max_age_hours=24,
-    similarity_threshold=0.85,
-    performance_tracking=True
-)
+
+# Factory function for easy cache creation
+def create_cache(
+    cache_type: str = "generic",
+    config: Optional[Dict[str, Any]] = None
+) -> GenericCache:
+    """Factory function to create different cache types"""
+    
+    cache_config = CacheConfig(**config) if config else CacheConfig()
+    
+    if cache_type == "schema":
+        return SchemaAnalysisCache(cache_config)
+    else:
+        return GenericCache(cache_config)
