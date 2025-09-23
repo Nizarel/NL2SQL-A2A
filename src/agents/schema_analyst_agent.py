@@ -446,3 +446,36 @@ class GenericSchemaAnalystAgent(BaseAgent):
             "metadata": metadata or {},
             "timestamp": datetime.now().isoformat()
         }
+
+
+class SchemaAnalystAgent(GenericSchemaAnalystAgent):
+    """
+    Backward compatible SchemaAnalystAgent that maintains the old interface
+    while using the new GenericSchemaAnalystAgent implementation
+    """
+    
+    def __init__(self, kernel: Kernel, schema_service_or_provider, config: Optional[SchemaAnalystConfig] = None, name: str = "SchemaAnalystAgent"):
+        """
+        Initialize with backward compatibility
+        
+        Args:
+            kernel: Semantic Kernel instance
+            schema_service_or_provider: Either a schema_service (old interface) or schema_provider (new interface)
+            config: Optional configuration
+            name: Agent name
+        """
+        # Check if it's the old interface (schema_service) or new interface (schema_provider)
+        if hasattr(schema_service_or_provider, 'get_full_schema_summary'):
+            # Old interface - schema_service
+            self.schema_service = schema_service_or_provider
+            # Use schema_service as schema_provider for the parent class
+            super().__init__(kernel, schema_service_or_provider, config, name)
+        else:
+            # New interface - schema_provider
+            super().__init__(kernel, schema_service_or_provider, config, name)
+            # Create a schema_service attribute for backward compatibility
+            self.schema_service = schema_service_or_provider
+
+
+# Alias for backward compatibility
+# SchemaAnalystAgent = GenericSchemaAnalystAgent

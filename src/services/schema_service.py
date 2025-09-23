@@ -213,3 +213,59 @@ class QueryAnalyzer:
                 metrics.append(agg)
         
         return metrics
+
+
+class SchemaService(GenericSchemaService):
+    """
+    Backward compatible SchemaService that extends GenericSchemaService
+    with the expected interface for the NL2SQL system
+    """
+    
+    def __init__(self, mcp_plugin: Any, config: Optional[Dict[str, Any]] = None):
+        """Initialize with MCP plugin as data source"""
+        super().__init__(mcp_plugin, config)
+        self._schema_context: Optional[str] = None
+    
+    async def initialize_schema_context(self) -> str:
+        """Initialize and return the schema context as a string"""
+        if self._schema_context is not None:
+            return self._schema_context
+        
+        try:
+            # Get all tables
+            tables = await self.get_tables()
+            
+            context_parts = ["Database Schema Information:\n"]
+            
+            # Get schema for each table
+            for table in tables:
+                try:
+                    schema = await self.get_table_schema(table)
+                    context_parts.append(f"\nTable: {table}")
+                    context_parts.append(f"Columns: {schema.get('columns', [])}")
+                except Exception as e:
+                    context_parts.append(f"\nTable: {table} (Error getting schema: {e})")
+            
+            # Get relationships
+            try:
+                relationships = await self.get_relationships()
+                if relationships:
+                    context_parts.append(f"\nRelationships: {relationships}")
+            except Exception as e:
+                context_parts.append(f"\nRelationships: Error getting relationships: {e}")
+            
+            self._schema_context = "\n".join(context_parts)
+            return self._schema_context
+            
+        except Exception as e:
+            error_context = f"Error initializing schema context: {e}"
+            self._schema_context = error_context
+            return error_context
+    
+    def get_full_schema_summary(self) -> str:
+        """Get full schema summary - synchronous version"""
+        if self._schema_context is not None:
+            return self._schema_context
+        
+        # If context not initialized, return a basic message
+        return "Schema context not initialized. Please call initialize_schema_context() first."
