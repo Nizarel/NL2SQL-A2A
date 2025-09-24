@@ -7,6 +7,7 @@ import re
 import os
 import hashlib
 from typing import Dict, Any, List
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 from semantic_kernel import Kernel
 from semantic_kernel.prompt_template import PromptTemplateConfig
 from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
@@ -43,10 +44,13 @@ class SQLGeneratorAgent(BaseAgent):
         
     def _setup_templates(self):
         """
-        Setup multiple Jinja2 templates for different complexity levels
+        Setup multiple Jinja2 templates for different complexity levels with proper include support
         """
         # Get the templates directory
         templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
+        
+        # Setup proper Jinja2 environment with FileSystemLoader for includes
+        jinja_env = Environment(loader=FileSystemLoader(templates_dir))
         
         # Template files for different complexity levels
         template_files = {
@@ -54,23 +58,24 @@ class SQLGeneratorAgent(BaseAgent):
             'intermediate': 'intermediate_sql_generation.jinja2', 
             'enhanced': 'enhanced_sql_generation.jinja2',
             'advanced': 'advanced_sql_generation.jinja2'
-            # Removed multi_step template to ensure consistency
         }
         
         try:
-            # Load intent analysis template
+            # Load intent analysis template (no includes needed)
             intent_template_path = os.path.join(templates_dir, 'intent_analysis.jinja2')
             with open(intent_template_path, 'r', encoding='utf-8') as f:
                 intent_template_content = f.read()
                 
-            # Load all SQL generation templates
+            # Load and pre-render SQL generation templates with includes resolved
             sql_templates = {}
             for level, filename in template_files.items():
-                template_path = os.path.join(templates_dir, filename)
                 try:
-                    with open(template_path, 'r', encoding='utf-8') as f:
-                        sql_templates[level] = f.read()
-                except FileNotFoundError:
+                    # Pre-render to resolve includes but keep original Jinja2 variables
+                    # We'll create a version that has includes resolved but keeps variable placeholders
+                    raw_template_content = self._resolve_template_includes(jinja_env, filename)
+                    sql_templates[level] = raw_template_content
+                    
+                except (FileNotFoundError, TemplateNotFound):
                     print(f"⚠️ Template {filename} not found, using basic template as fallback")
                     if 'basic' in sql_templates:
                         sql_templates[level] = sql_templates['basic']
@@ -116,6 +121,41 @@ class SQLGeneratorAgent(BaseAgent):
                 function_name=f"generate_sql_{level}",
                 prompt_template_config=sql_config
             )
+    
+    def _resolve_template_includes(self, jinja_env: Environment, template_name: str) -> str:
+        """
+        Resolve template includes manually to create a flat template compatible with SemanticKernel
+        """
+        try:
+            # Read the main template
+            template_path = os.path.join(jinja_env.loader.searchpath[0], template_name)
+            with open(template_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Find all {% include %} directives and replace them with actual content
+            import re
+            include_pattern = r"{%\s*include\s+['\"]([^'\"]+)['\"]\s*%}"
+            
+            def replace_include(match):
+                include_file = match.group(1)
+                try:
+                    include_path = os.path.join(jinja_env.loader.searchpath[0], include_file)
+                    with open(include_path, 'r', encoding='utf-8') as f:
+                        return f.read()
+                except FileNotFoundError:
+                    print(f"⚠️ Include file not found: {include_file}")
+                    return f"# Include file not found: {include_file}"
+            
+            # Replace all includes with their content
+            resolved_content = re.sub(include_pattern, replace_include, content)
+            return resolved_content
+            
+        except Exception as e:
+            print(f"❌ Error resolving includes for {template_name}: {e}")
+            # Fallback: return original content
+            template_path = os.path.join(jinja_env.loader.searchpath[0], template_name)
+            with open(template_path, 'r', encoding='utf-8') as f:
+                return f.read()
         
     async def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
