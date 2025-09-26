@@ -16,6 +16,7 @@ import json
 from pydantic import BaseModel, Field
 
 from .cosmos_db_service import CosmosDbService, CosmosDbConfig
+from .memory_manager import memory_manager
 from Models.agent_response import (
     Session, Message, CacheItem, AgentResponse, FormattedResults,
     ConversationLog, ConversationPerformance, ConversationMetadata, 
@@ -92,8 +93,8 @@ class OrchestratorMemoryService:
             cosmos_service: Initialized Cosmos DB service instance
         """
         self.cosmos_service = cosmos_service
-        self._embedding_cache = {}  # In-memory cache for embeddings
-        self._current_workflows: Dict[str, WorkflowContext] = {}  # Active workflow tracking
+        self.memory_manager = memory_manager  # Use singleton memory manager
+        # Initialize memory-managed caches instead of unbounded dicts
         
     @classmethod
     async def create_from_config(cls, config: CosmosDbConfig = None) -> 'OrchestratorMemoryService':
@@ -962,7 +963,7 @@ class OrchestratorMemoryService:
             )
             
             # Store in memory for active tracking
-            self._current_workflows[context.workflow_id] = context
+            self.memory_manager.workflow_manager.add_workflow(context.workflow_id, context)
             
             logger.info(f"Started workflow session for user {user_id}, workflow {context.workflow_id}")
             return context
@@ -981,11 +982,10 @@ class OrchestratorMemoryService:
             result: Stage result data
         """
         try:
-            if workflow_id not in self._current_workflows:
+            context = self.memory_manager.workflow_manager.get_workflow(workflow_id)
+            if not context:
                 logger.warning(f"Workflow context not found: {workflow_id}")
                 return
-            
-            context = self._current_workflows[workflow_id]
             setattr(context, stage, result)
             
             # Track cache hits
@@ -1009,11 +1009,10 @@ class OrchestratorMemoryService:
             Completion summary with performance metrics
         """
         try:
-            if workflow_id not in self._current_workflows:
+            context = self.memory_manager.workflow_manager.get_workflow(workflow_id)
+            if not context:
                 logger.warning(f"Workflow context not found: {workflow_id}")
                 return {"error": "Workflow not found"}
-            
-            context = self._current_workflows[workflow_id]
             
             # Calculate total processing time
             total_time = (datetime.now(timezone.utc) - context.timestamp).total_seconds() * 1000
@@ -1056,7 +1055,7 @@ class OrchestratorMemoryService:
             await self._store_conversation_log(conversation_log)
             
             # Clean up memory
-            del self._current_workflows[workflow_id]
+            self.memory_manager.workflow_manager.remove_workflow(workflow_id)
             
             completion_summary = {
                 "workflow_id": workflow_id,
@@ -1075,8 +1074,7 @@ class OrchestratorMemoryService:
         except Exception as e:
             logger.error(f"Error completing workflow: {str(e)}")
             # Clean up memory even on error
-            if workflow_id in self._current_workflows:
-                del self._current_workflows[workflow_id]
+            self.memory_manager.workflow_manager.remove_workflow(workflow_id)
             return {"error": str(e)}
     
     async def complete_workflow_session(self, workflow_context, formatted_results=None, 

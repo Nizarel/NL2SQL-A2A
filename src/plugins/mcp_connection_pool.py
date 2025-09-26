@@ -205,8 +205,11 @@ class MCPConnectionPool:
             if conn:
                 await self._return_connection(conn)
     
-    async def _borrow_connection(self) -> PooledConnection:
-        """Borrow a connection from the pool"""
+    async def _borrow_connection(self, retry_count: int = 0, max_retries: int = 3) -> PooledConnection:
+        """Borrow a connection from the pool with retry limit to prevent stack buildup"""
+        if retry_count > max_retries:
+            raise Exception(f"Failed to borrow connection after {max_retries} retries")
+            
         async with self._connection_lock:
             # Try to get an idle connection
             while self._idle_connections:
@@ -238,7 +241,10 @@ class MCPConnectionPool:
             # No idle connections available, try to create new one
             if len(self._active_connections) + len(self._idle_connections) < self.max_connections:
                 try:
-                    conn = await self._create_connection()
+                    conn = await asyncio.wait_for(
+                        self._create_connection(), 
+                        timeout=self.connection_timeout
+                    )
                     self._active_connections[conn.connection_id] = conn
                     conn.mark_used()
                     
@@ -253,12 +259,14 @@ class MCPConnectionPool:
                     return conn
                 except Exception as e:
                     self.logger.error(f"Failed to create new connection: {e}")
+                    # Don't retry creation, fall through to wait logic
             
-            # Wait for a connection to be returned (with timeout)
-            await asyncio.sleep(0.1)  # Brief pause before retry
+            # Wait for a connection to be returned (with exponential backoff)
+            wait_time = min(0.1 * (2 ** retry_count), 2.0)  # Exponential backoff, max 2s
+            await asyncio.sleep(wait_time)
             
-            # Recursive call with limit to prevent infinite recursion
-            return await self._borrow_connection()
+            # Recursive call with retry counter to prevent infinite recursion
+            return await self._borrow_connection(retry_count + 1, max_retries)
     
     async def _return_connection(self, conn: PooledConnection):
         """Return a connection to the pool"""
