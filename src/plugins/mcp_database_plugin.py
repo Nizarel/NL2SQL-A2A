@@ -26,16 +26,17 @@ class MCPDatabasePlugin(KernelBaseModel):
         super().__init__(mcp_server_url=mcp_server_url, enable_connection_pooling=enable_pooling, **kwargs)
         
         if enable_pooling:
-            # Initialize connection pool with configuration from environment
+            # Initialize connection pool with PERFORMANCE OPTIMIZED configuration
             pool_config = {
-                'min_connections': int(os.getenv('MCP_POOL_MIN_CONNECTIONS', '2')),
-                'max_connections': int(os.getenv('MCP_POOL_MAX_CONNECTIONS', '8')),
-                'connection_timeout': float(os.getenv('MCP_POOL_CONNECTION_TIMEOUT', '30.0')),
-                'idle_timeout': float(os.getenv('MCP_POOL_IDLE_TIMEOUT', '300.0')),
-                'max_connection_age': float(os.getenv('MCP_POOL_MAX_AGE', '3600.0')),
-                'health_check_interval': float(os.getenv('MCP_POOL_HEALTH_INTERVAL', '60.0')),
-                'retry_attempts': int(os.getenv('MCP_POOL_RETRY_ATTEMPTS', '3')),
-                'enable_metrics': self.enable_performance_tracking
+                'min_connections': int(os.getenv('MCP_POOL_MIN_CONNECTIONS', '1')),  # Reduced for faster startup
+                'max_connections': int(os.getenv('MCP_POOL_MAX_CONNECTIONS', '4')),  # Reduced to prevent contention
+                'connection_timeout': float(os.getenv('MCP_POOL_CONNECTION_TIMEOUT', '10.0')),  # Faster timeout
+                'idle_timeout': float(os.getenv('MCP_POOL_IDLE_TIMEOUT', '120.0')),  # Shorter idle timeout
+                'max_connection_age': float(os.getenv('MCP_POOL_MAX_AGE', '1800.0')),  # 30 minutes
+                'health_check_interval': float(os.getenv('MCP_POOL_HEALTH_INTERVAL', '120.0')),  # Every 2 minutes
+                'retry_attempts': int(os.getenv('MCP_POOL_RETRY_ATTEMPTS', '2')),  # Fewer retries for faster failure
+                'enable_metrics': self.enable_performance_tracking,
+                'lazy_initialization': True  # Enable lazy initialization for faster startup
             }
             
             self.connection_pool = MCPConnectionPool(mcp_server_url, **pool_config)
@@ -51,16 +52,24 @@ class MCPDatabasePlugin(KernelBaseModel):
             await self.connection_pool.initialize()
     
     async def _execute_with_pool(self, operation_name: str, tool_name: str, params: dict = None) -> str:
-        """Execute MCP operation using connection pool with retry logic"""
+        """Execute MCP operation using connection pool with enhanced logging and retry logic"""
         if not self.connection_pool:
             raise ValueError("Connection pool not initialized")
         
         start_time = time.time()
         last_exception = None
+        connection_id = None
+        
+        print(f"🔧 Starting {operation_name} operation with tool: {tool_name}")
         
         for attempt in range(self.connection_pool.retry_attempts):
             try:
                 async with self.connection_pool.get_connection() as conn:
+                    connection_id = conn.connection_id
+                    operation_start = time.time()
+                    
+                    print(f"🔌 Using connection [{connection_id}] for {operation_name} (attempt {attempt + 1})")
+                    
                     # Execute the MCP tool call
                     async with conn.client:
                         if params:
@@ -68,23 +77,51 @@ class MCPDatabasePlugin(KernelBaseModel):
                         else:
                             result = await conn.client.call_tool(tool_name)
                     
+                    operation_duration = time.time() - operation_start
+                    total_duration = time.time() - start_time
+                    
+                    # Update connection with operation details
+                    conn.mark_used(operation_duration)
+                    
                     # Record performance metrics
                     if self.connection_pool._metrics:
-                        operation_time = (time.time() - start_time) * 1000
-                        self.connection_pool._metrics.record_operation_time(operation_time)
+                        operation_time_ms = total_duration * 1000
+                        self.connection_pool._metrics.record_operation_time(operation_time_ms)
+                    
+                    # Log successful operation
+                    print(f"✅ {operation_name} completed successfully using connection [{connection_id}] in {operation_duration:.3f}s (total: {total_duration:.3f}s)")
+                    
+                    # Log operation event if validation is enabled
+                    if hasattr(self.connection_pool, '_log_operation_event'):
+                        self.connection_pool._log_operation_event(
+                            connection_id, operation_name, operation_duration, True
+                        )
                     
                     return str(result)
             
             except Exception as e:
                 last_exception = e
+                operation_duration = time.time() - start_time
+                
+                print(f"❌ {operation_name} attempt {attempt + 1} failed using connection [{connection_id or 'unknown'}]: {e}")
+                
+                # Log failed operation event if validation is enabled
+                if connection_id and hasattr(self.connection_pool, '_log_operation_event'):
+                    self.connection_pool._log_operation_event(
+                        connection_id, operation_name, operation_duration, False
+                    )
+                
                 if attempt < self.connection_pool.retry_attempts - 1:
                     wait_time = 0.1 * (2 ** attempt)  # Exponential backoff
                     await asyncio.sleep(wait_time)
-                    print(f"⚠️ {operation_name} attempt {attempt + 1} failed, retrying in {wait_time:.1f}s: {e}")
+                    print(f"⏳ Retrying {operation_name} in {wait_time:.1f}s...")
         
         # All attempts failed
         if self.connection_pool._metrics:
             self.connection_pool._metrics.connection_errors += 1
+        
+        total_duration = time.time() - start_time
+        print(f"💥 {operation_name} failed after {self.connection_pool.retry_attempts} attempts in {total_duration:.3f}s")
         
         raise Exception(f"{operation_name} failed after {self.connection_pool.retry_attempts} attempts: {last_exception}")
     

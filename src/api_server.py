@@ -540,16 +540,105 @@ async def general_exception_handler(request, exc):
     )
 
 
+# Debug and Monitoring Endpoints
+@app.get("/debug/pool-metrics", response_model=APIResponse)
+async def get_pool_metrics(system: NL2SQLMultiAgentSystem = Depends(get_system)):
+    """Get MCP connection pool metrics for debugging and monitoring"""
+    try:
+        metrics = system.get_connection_pool_metrics()
+        if metrics:
+            # Add connection history and operation log if available
+            if hasattr(system, 'mcp_plugin') and system.mcp_plugin and system.mcp_plugin.connection_pool:
+                pool = system.mcp_plugin.connection_pool
+                metrics["connection_history"] = pool.get_connection_history(50)
+                metrics["operation_log"] = pool.get_operation_log(50)
+                
+                # Add validation results
+                validation = pool.validate_connection_reuse()
+                metrics["reuse_validation"] = validation
+        
+        return APIResponse(
+            success=True,
+            data=metrics or {"message": "Connection pooling not enabled"}
+        )
+    except Exception as e:
+        return APIResponse(
+            success=False,
+            error=f"Failed to get pool metrics: {str(e)}"
+        )
+
+
+@app.post("/debug/test-database", response_model=APIResponse)
+async def test_database_operation(
+    operation_data: dict,
+    system: NL2SQLMultiAgentSystem = Depends(get_system)
+):
+    """Test database operation for connection pool validation"""
+    try:
+        operation = operation_data.get("operation", "list_tables")
+        
+        if operation == "list_tables":
+            # Use the database plugin directly to test connection pool
+            if hasattr(system, 'mcp_plugin') and system.mcp_plugin:
+                result = await system.mcp_plugin.list_tables()
+                return APIResponse(
+                    success=True,
+                    data={"operation": operation, "result": result}
+                )
+            else:
+                return APIResponse(
+                    success=False,
+                    error="MCP plugin not available"
+                )
+        else:
+            return APIResponse(
+                success=False,
+                error=f"Unsupported test operation: {operation}"
+            )
+            
+    except Exception as e:
+        return APIResponse(
+            success=False,
+            error=f"Test operation failed: {str(e)}"
+        )
+
+
+@app.get("/debug/connection-history", response_model=APIResponse)
+async def get_connection_history(
+    limit: int = 100,
+    system: NL2SQLMultiAgentSystem = Depends(get_system)
+):
+    """Get connection pool history for debugging"""
+    try:
+        if hasattr(system, 'mcp_plugin') and system.mcp_plugin and system.mcp_plugin.connection_pool:
+            history = system.mcp_plugin.connection_pool.get_connection_history(limit)
+            return APIResponse(
+                success=True,
+                data={"connection_history": history, "count": len(history)}
+            )
+        else:
+            return APIResponse(
+                success=False,
+                error="Connection pool not available"
+            )
+    except Exception as e:
+        return APIResponse(
+            success=False,
+            error=f"Failed to get connection history: {str(e)}"
+        )
+
+
 if __name__ == "__main__":
     import uvicorn
     
     # Configuration
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("API_PORT", "8000"))
+    port = int(os.getenv("API_PORT", "8005"))
     
     print(f"🚀 Starting NL2SQL Multi-Agent API Server on {host}:{port}")
     print(f"📚 API Documentation: http://{host}:{port}/docs")
     print(f"🔍 Health Check: http://{host}:{port}/health")
+    print(f"🔧 Debug Endpoints: http://{host}:{port}/debug/pool-metrics")
     
     uvicorn.run(
         "api_server:app",

@@ -6,17 +6,19 @@ Provides connection pooling, health monitoring, and performance optimization
 import asyncio
 import time
 import logging
+import uuid
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
-from collections import deque
+from collections import deque, defaultdict
 from contextlib import asynccontextmanager
 from fastmcp import Client
 import os
+from datetime import datetime, timezone
 
 
 @dataclass
 class ConnectionMetrics:
-    """Metrics for connection pool performance monitoring"""
+    """Enhanced metrics for connection pool performance monitoring with detailed tracking"""
     total_created: int = 0
     total_closed: int = 0
     total_borrowed: int = 0
@@ -28,6 +30,9 @@ class ConnectionMetrics:
     average_borrow_time_ms: float = 0.0
     average_operation_time_ms: float = 0.0
     peak_active_connections: int = 0
+    connection_reuse_count: int = 0
+    connection_waste_count: int = 0  # New connections created when idle available
+    total_operations: int = 0
     
     def __post_init__(self):
         self._borrow_times: List[float] = []
@@ -46,23 +51,56 @@ class ConnectionMetrics:
         if len(self._operation_times) > 100:  # Keep last 100 measurements
             self._operation_times = self._operation_times[-100:]
         self.average_operation_time_ms = sum(self._operation_times) / len(self._operation_times)
+        self.total_operations += 1
+    
+    def record_connection_reuse(self):
+        """Record successful connection reuse"""
+        self.connection_reuse_count += 1
+    
+    def record_connection_waste(self):
+        """Record unnecessary new connection creation"""
+        self.connection_waste_count += 1
 
 
 @dataclass
 class PooledConnection:
-    """Wrapper for a pooled MCP client connection"""
+    """Enhanced wrapper for a pooled MCP client connection with detailed tracking"""
     client: Client
     created_at: float
     last_used: float
     last_health_check: float = 0.0
     is_healthy: bool = True
-    connection_id: str = field(default_factory=lambda: f"conn_{int(time.time() * 1000000) % 1000000}")
+    connection_id: str = field(default_factory=lambda: f"mcp_conn_{uuid.uuid4().hex[:8]}")
     usage_count: int = 0
+    total_operation_time: float = 0.0
+    last_operation_duration: float = 0.0
+    thread_id: Optional[str] = None
+    session_id: Optional[str] = None
+    creation_stack_info: Optional[str] = None
     
-    def mark_used(self):
-        """Mark connection as recently used"""
+    def mark_used(self, operation_duration: float = 0.0, session_id: str = None):
+        """Mark connection as recently used with detailed tracking"""
         self.last_used = time.time()
         self.usage_count += 1
+        self.last_operation_duration = operation_duration
+        self.total_operation_time += operation_duration
+        if session_id:
+            self.session_id = session_id
+            
+    def get_connection_info(self) -> Dict[str, Any]:
+        """Get detailed connection information for logging/debugging"""
+        return {
+            "connection_id": self.connection_id,
+            "created_at": datetime.fromtimestamp(self.created_at, timezone.utc).isoformat(),
+            "last_used": datetime.fromtimestamp(self.last_used, timezone.utc).isoformat(),
+            "usage_count": self.usage_count,
+            "total_operation_time": self.total_operation_time,
+            "last_operation_duration": self.last_operation_duration,
+            "is_healthy": self.is_healthy,
+            "age_seconds": time.time() - self.created_at,
+            "idle_seconds": time.time() - self.last_used,
+            "session_id": self.session_id
+        }
     
     def is_expired(self, max_age_seconds: int) -> bool:
         """Check if connection has exceeded maximum age"""
@@ -107,17 +145,35 @@ class MCPConnectionPool:
         self._active_connections: Dict[str, PooledConnection] = {}
         self._connection_lock = asyncio.Lock()
         
+        # Enhanced tracking and validation
+        self._connection_history: List[Dict[str, Any]] = []  # Connection lifecycle events
+        self._operation_log: List[Dict[str, Any]] = []  # Operation tracking
+        self._validation_enabled = True
+        self.pool_id = f"pool_{uuid.uuid4().hex[:8]}"
+        
         # Health and monitoring
         self._metrics = ConnectionMetrics() if enable_metrics else None
         self._health_check_task: Optional[asyncio.Task] = None
         self._shutdown = False
         self._initialization_started = False
         
-        # Logger setup
-        self.logger = logging.getLogger(__name__)
+        # Enhanced logger setup with connection tracking
+        self.logger = logging.getLogger(f"{__name__}.{self.pool_id}")
+        self.logger.setLevel(logging.INFO)
+        
+        # Create dedicated connection logger if not exists
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
         
         optimization_note = "lazy" if lazy_initialization else "eager"
-        print(f"🔗 Optimized MCP Connection Pool initialized ({optimization_note}): "
+        self.logger.info(f"🔗 MCP Connection Pool [{self.pool_id}] initialized ({optimization_note}): "
+                        f"{min_connections}-{max_connections} connections, url={mcp_server_url}")
+        print(f"🔗 Optimized MCP Connection Pool [{self.pool_id}] initialized ({optimization_note}): "
               f"{min_connections}-{max_connections} connections, url={mcp_server_url}")
     
     async def initialize(self):
@@ -180,6 +236,13 @@ class MCPConnectionPool:
             if self._metrics:
                 self._metrics.total_created += 1
             
+            # Log connection creation
+            self.logger.info(f"✅ Created new connection [{conn.connection_id}] - Total created: {self._metrics.total_created if self._metrics else 'N/A'}")
+            self._log_connection_event("CREATED", conn.connection_id, {
+                "created_at": conn.created_at,
+                "health_status": conn.is_healthy
+            })
+            
             return conn
         except Exception as e:
             if self._metrics:
@@ -228,10 +291,19 @@ class MCPConnectionPool:
                         self._metrics.current_idle -= 1
                         self._metrics.current_active += 1
                         self._metrics.total_borrowed += 1
+                        self._metrics.connection_reuse_count += 1  # Track reuse
                         self._metrics.peak_active_connections = max(
                             self._metrics.peak_active_connections,
                             self._metrics.current_active
                         )
+                    
+                    # Log connection reuse
+                    self.logger.info(f"🔄 Reusing connection [{conn.connection_id}] (usage #{conn.usage_count + 1}) - Active: {self._metrics.current_active if self._metrics else 'N/A'}")
+                    self._log_connection_event("BORROWED_REUSE", conn.connection_id, {
+                        "usage_count": conn.usage_count + 1,
+                        "idle_time": time.time() - conn.last_used,
+                        "active_connections": self._metrics.current_active if self._metrics else 'N/A'
+                    })
                     
                     return conn
                 else:
@@ -255,6 +327,13 @@ class MCPConnectionPool:
                             self._metrics.peak_active_connections,
                             self._metrics.current_active
                         )
+                    
+                    # Log new connection creation
+                    self.logger.info(f"➕ Created new connection [{conn.connection_id}] for immediate use - Active: {self._metrics.current_active if self._metrics else 'N/A'}")
+                    self._log_connection_event("BORROWED_NEW", conn.connection_id, {
+                        "created_for_immediate_use": True,
+                        "active_connections": self._metrics.current_active if self._metrics else 'N/A'
+                    })
                     
                     return conn
                 except Exception as e:
@@ -285,6 +364,13 @@ class MCPConnectionPool:
                         self._metrics.current_active -= 1
                         self._metrics.current_idle += 1
                         self._metrics.total_returned += 1
+                    
+                    # Log connection return
+                    self.logger.info(f"↩️ Returned connection [{conn.connection_id}] to pool - Idle: {self._metrics.current_idle if self._metrics else 'N/A'}")
+                    self._log_connection_event("RETURNED", conn.connection_id, {
+                        "usage_count": conn.usage_count,
+                        "idle_connections": self._metrics.current_idle if self._metrics else 'N/A'
+                    })
                 else:
                     # Connection is unhealthy or expired, close it
                     await self._close_connection(conn)
@@ -302,6 +388,14 @@ class MCPConnectionPool:
             
             if self._metrics:
                 self._metrics.total_closed += 1
+            
+            # Log connection closure
+            self.logger.info(f"🔒 Closed connection [{conn.connection_id}] - Total closed: {self._metrics.total_closed if self._metrics else 'N/A'}")
+            self._log_connection_event("CLOSED", conn.connection_id, {
+                "final_usage_count": conn.usage_count,
+                "connection_age": time.time() - conn.created_at,
+                "healthy_closure": conn.is_healthy
+            })
                 
         except Exception as e:
             self.logger.error(f"Error closing connection {conn.connection_id}: {e}")
@@ -459,4 +553,97 @@ class MCPConnectionPool:
                 self._metrics.current_active = 0
                 self._metrics.current_idle = 0
         
-        print("🔒 MCP Connection Pool closed")
+        self.logger.info(f"🔒 MCP Connection Pool [{self.pool_id}] closed")
+        print(f"🔒 MCP Connection Pool [{self.pool_id}] closed")
+    
+    def _log_connection_event(self, event: str, connection_id: str, details: Dict[str, Any]):
+        """Log connection lifecycle events for validation and debugging"""
+        if not self._validation_enabled:
+            return
+            
+        event_data = {
+            "timestamp": time.time(),
+            "iso_timestamp": datetime.now(timezone.utc).isoformat(),
+            "pool_id": self.pool_id,
+            "event": event,
+            "connection_id": connection_id,
+            "details": details
+        }
+        
+        self._connection_history.append(event_data)
+        
+        # Keep history manageable (last 1000 events)
+        if len(self._connection_history) > 1000:
+            self._connection_history = self._connection_history[-1000:]
+    
+    def _log_operation_event(self, connection_id: str, operation: str, duration: float, success: bool):
+        """Log database operation events for performance analysis"""
+        if not self._validation_enabled:
+            return
+            
+        operation_data = {
+            "timestamp": time.time(),
+            "iso_timestamp": datetime.now(timezone.utc).isoformat(),
+            "pool_id": self.pool_id,
+            "connection_id": connection_id,
+            "operation": operation,
+            "duration_ms": duration * 1000,
+            "success": success
+        }
+        
+        self._operation_log.append(operation_data)
+        
+        # Keep operation log manageable (last 500 operations)
+        if len(self._operation_log) > 500:
+            self._operation_log = self._operation_log[-500:]
+    
+    def get_connection_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent connection lifecycle events for validation"""
+        return self._connection_history[-limit:]
+    
+    def get_operation_log(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent operation events for performance analysis"""
+        return self._operation_log[-limit:]
+    
+    def validate_connection_reuse(self) -> Dict[str, Any]:
+        """Validate connection reuse patterns and identify issues"""
+        if not self._metrics:
+            return {"error": "Metrics disabled"}
+        
+        total_borrows = self._metrics.total_borrowed
+        reuse_count = self._metrics.connection_reuse_count
+        new_creations = self._metrics.total_created
+        
+        if total_borrows == 0:
+            return {"error": "No connection usage data"}
+        
+        reuse_rate = (reuse_count / total_borrows) * 100 if total_borrows > 0 else 0
+        efficiency_score = reuse_rate
+        
+        validation_result = {
+            "pool_id": self.pool_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "connection_reuse_stats": {
+                "total_borrows": total_borrows,
+                "reuse_count": reuse_count,
+                "new_creations": new_creations,
+                "reuse_rate_percent": round(reuse_rate, 2),
+                "efficiency_score": round(efficiency_score, 2)
+            },
+            "recommendations": self._generate_reuse_recommendations(reuse_rate)
+        }
+        
+        return validation_result
+    
+    def _generate_reuse_recommendations(self, reuse_rate: float) -> List[str]:
+        """Generate recommendations based on connection reuse analysis"""
+        recommendations = []
+        
+        if reuse_rate < 50:
+            recommendations.append("🔄 Low connection reuse rate - consider increasing min_connections or idle_timeout")
+        elif reuse_rate > 90:
+            recommendations.append("✅ Excellent connection reuse rate - pool is well optimized")
+        else:
+            recommendations.append("✅ Connection pool usage patterns look healthy")
+        
+        return recommendations

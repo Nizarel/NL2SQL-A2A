@@ -326,12 +326,29 @@ class ExecutorAgent(BaseAgent):
             header_line = None
             data_lines = []
             
-            for i, line in enumerate(lines):
-                if '|' in line and not line.startswith('=') and not line.startswith('-'):
+            # Skip "Query Results" lines and separator lines
+            clean_lines = []
+            for line in lines:
+                line = line.strip()
+                if (line and 
+                    not line.startswith('Query Results') and 
+                    not line.startswith('=') and 
+                    not (line.startswith('-') and all(c in '-' for c in line)) and  # Only skip lines that are ALL dashes
+                    not line.endswith('rows):')):
+                    clean_lines.append(line)
+            
+            # First, try pipe-delimited format
+            for i, line in enumerate(clean_lines):
+                if '|' in line:
                     if header_line is None:
                         header_line = line
                     else:
                         data_lines.append(line)
+            
+            # If no pipe-delimited data found, assume first non-empty line is header
+            if not header_line and clean_lines:
+                header_line = clean_lines[0]
+                data_lines = clean_lines[1:]
             
             if not header_line:
                 return {
@@ -340,18 +357,41 @@ class ExecutorAgent(BaseAgent):
                 }
             
             # Parse header
-            headers = [col.strip() for col in header_line.split('|') if col.strip()]
+            if '|' in header_line:
+                headers = [col.strip() for col in header_line.split('|') if col.strip()]
+            else:
+                headers = [header_line.strip()]
             
             # Parse data rows
             rows = []
             for line in data_lines:
-                if line.strip() and not line.startswith('-') and '|' in line:
+                line = line.strip()
+                if not line or line.startswith('-') or line.startswith('='):
+                    continue
+                    
+                if '|' in line:
+                    # Pipe-delimited format
                     row_data = [cell.strip() for cell in line.split('|') if cell.strip()]
-                    if len(row_data) >= len(headers):
-                        # Take only as many cells as we have headers
-                        row_data = row_data[:len(headers)]
-                        row_dict = dict(zip(headers, row_data))
-                        rows.append(row_dict)
+                else:
+                    # For single column results, treat entire line as single value
+                    if len(headers) == 1:
+                        row_data = [line]
+                    else:
+                        # Space-delimited format - split by whitespace
+                        row_data = [cell.strip() for cell in line.split() if cell.strip()]
+                
+                if len(row_data) >= len(headers):
+                    # Take only as many cells as we have headers
+                    row_data = row_data[:len(headers)]
+                    row_dict = dict(zip(headers, row_data))
+                    rows.append(row_dict)
+                elif len(row_data) > 0:
+                    # Handle case where we have fewer data items than headers
+                    # Pad with empty strings
+                    while len(row_data) < len(headers):
+                        row_data.append('')
+                    row_dict = dict(zip(headers, row_data))
+                    rows.append(row_dict)
             
             return {
                 "status": "success",
