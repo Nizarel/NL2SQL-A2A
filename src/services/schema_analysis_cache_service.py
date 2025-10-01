@@ -418,6 +418,54 @@ class SchemaAnalysisCache(GenericCache[Dict[str, Any]]):
             embedding_service=embedding_service,
             batch=batch
         )
+    
+    async def get_semantic_match(
+        self,
+        question: str,
+        context: str,
+        embedding_service: EmbeddingServiceProtocol,
+        similarity_threshold: float
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get semantic match from cache with custom similarity threshold
+        Returns data in the format expected by schema_analyst_agent.py
+        """
+        try:
+            # Generate query embedding
+            query_text = f"{question} {context}".strip()
+            embeddings = await embedding_service.generate_embeddings([query_text])
+            if not embeddings:
+                return None
+            
+            query_embedding = self._normalize_embedding(embeddings[0])
+            
+            # Find best match with custom threshold
+            best_score = 0.0
+            best_entry = None
+            
+            for key, entry in self._cache.items():
+                if entry.embedding:
+                    score = self._cosine_similarity(query_embedding, entry.embedding)
+                    if score > best_score and score >= similarity_threshold:
+                        best_score = score
+                        best_entry = entry
+            
+            if best_entry:
+                best_entry.mark_accessed()
+                # Move to end (LRU)
+                self._cache.move_to_end(best_entry.key)
+                
+                # Return in expected format with data and similarity
+                return {
+                    "data": best_entry.data,
+                    "similarity": best_score
+                }
+            
+        except Exception:
+            # Silently fail for semantic search errors
+            pass
+        
+        return None
 
 
 # Factory function for easy cache creation
